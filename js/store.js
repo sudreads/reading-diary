@@ -90,6 +90,35 @@ export function remove(kind, id) {
   return write(kind, id, (prev, rev) => ({ ...prev, deleted: true, rev }));
 }
 
+// Including tombstones - the review outbox needs a deleted book's work id to delete its review.
+export async function getRaw(kind, id) {
+  return (await req(db.transaction(kind).objectStore(kind).get(id))) || null;
+}
+
+// Review outbox: bookId -> generation. Bump and ack each run in one transaction so a bump that
+// lands while a write is in flight can never be erased by that write's ack.
+export async function outboxBump(bookId) {
+  const tx = db.transaction('meta', 'readwrite');
+  const meta = tx.objectStore('meta');
+  const row = await req(meta.get('reviewOutbox'));
+  const box = row ? row.value : {};
+  box[bookId] = (box[bookId] || 0) + 1;
+  meta.put({ key: 'reviewOutbox', value: box });
+  await done(tx);
+  emit('outbox');
+}
+
+export async function outboxAck(bookId, gen) {
+  const tx = db.transaction('meta', 'readwrite');
+  const meta = tx.objectStore('meta');
+  const row = await req(meta.get('reviewOutbox'));
+  const box = row ? row.value : {};
+  const cleared = box[bookId] === gen;
+  if (cleared) { delete box[bookId]; meta.put({ key: 'reviewOutbox', value: box }); }
+  await done(tx);
+  return cleared;
+}
+
 export async function snapshot() {
   const out = {};
   for (const k of KINDS) out[k] = await all(k);

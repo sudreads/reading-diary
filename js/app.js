@@ -6,8 +6,11 @@ import { validateBackup } from './validate.js';
 import { searchBooks } from './openlibrary.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
 import { isConfigured } from './drive.js';
+import { isConfigured as fbConfigured } from './firebase.js';
+import { workIdOf } from './social.js';
+import { reviewsSheet, handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const TABS = [
   { id: 'now', label: 'Now', icon: '📖' },
   { id: 'journal', label: 'Notebook', icon: '📓' },
@@ -143,6 +146,7 @@ function currentBookCard(book, readToday) {
     question,
     h('div', { class: 'actions' },
       h('button', { class: 'btn', onclick: () => { ui.section = 'notebook'; go('journal', book.id); } }, '📓 Notebook'),
+      fbConfigured() && workIdOf(book.olKey) && h('button', { class: 'btn', onclick: () => openReviews(book) }, '★ Reviews'),
       h('button', { class: 'btn', onclick: () => finishSheet(book) }, 'Finished 🏆')));
 }
 
@@ -181,19 +185,37 @@ function finishSheet(book) {
   const starBox = h('div');
   const drawStars = () => starBox.replaceChildren(stars(rating, (n) => { rating = n; drawStars(); }));
   drawStars();
-  const comment = h('textarea', { rows: '4', maxlength: '20000', placeholder: 'What did you think? Would you recommend it?' });
+  const comment = h('textarea', { rows: '4', maxlength: '2000', placeholder: 'What did you think? Would you recommend it?' });
   comment.value = book.comment || '';
+  const share = publicSwitch(book, book.publicReview !== false); // on by default for new finishes
   const close = sheet(`Finished ${book.title}!`, h('div', { class: 'form' },
     h('p', null, 'It goes on your trophy road. How was it?'),
     starBox,
     h('label', null, 'Your review', comment),
+    share.el,
     h('button', { class: 'btn primary', onclick: async () => {
       if (!rating) return toast('Tap the stars to rate it');
-      await store.save('books', { id: book.id, status: 'finished', finishedAt: book.finishedAt || localDate(), rating, comment: comment.value.trim() });
+      await store.save('books', { id: book.id, status: 'finished', finishedAt: book.finishedAt || localDate(), rating, comment: comment.value.trim(), publicReview: share.value() });
+      await store.outboxBump(book.id);
       close();
       celebrate();
       go('now'); // straight to picking the next book
     } }, 'Add to trophy road')));
+}
+
+// "Post publicly" switch. Hidden (and false) when reviews are off or the book can't be matched.
+function publicSwitch(book, initial) {
+  if (!fbConfigured() || !workIdOf(book.olKey)) {
+    const why = fbConfigured() ? h('p', { class: 'muted small' }, 'Private only - add the book from search to share reviews.') : null;
+    return { el: why, value: () => book.publicReview === true };
+  }
+  const box = h('input', { type: 'checkbox', checked: initial });
+  const who = syncer.state.handle ? `@${syncer.state.handle}` : 'your reader name';
+  return {
+    el: h('label', { class: 'switch-row' }, box,
+      h('span', null, h('strong', null, 'Post publicly'), h('span', { class: 'muted small block' }, `Everyone in the beta will see your stars and review as ${who}.`))),
+    value: () => box.checked,
+  };
 }
 
 function celebrate() {
@@ -234,8 +256,10 @@ function addBookSheet() {
       results.replaceChildren(h('p', { class: 'muted' }, 'Searching…'));
       try {
         const found = await searchBooks(term);
-        results.replaceChildren(...(found.length ? found.map((b) => h('button', { class: 'result', onclick: () => add(b) },
-          cover(b, 'cover-xs'), h('span', null, h('strong', null, b.title), b.author && h('span', { class: 'muted' }, ` - ${b.author}`)))) : [h('p', { class: 'muted' }, 'Nothing found - add it by hand below.')]));
+        results.replaceChildren(...(found.length ? found.map((b) => h('div', { class: 'result-row' },
+          h('button', { class: 'result', onclick: () => add(b) },
+            cover(b, 'cover-xs'), h('span', null, h('strong', null, b.title), b.author && h('span', { class: 'muted' }, ` - ${b.author}`))),
+          fbConfigured() && workIdOf(b.olKey) && h('button', { class: 'btn small', 'aria-label': `Reviews of ${b.title}`, onclick: () => reviewsSheet(b) }, '★'))) : [h('p', { class: 'muted' }, 'Nothing found - add it by hand below.')]));
       } catch (e) {
         if (e.name !== 'AbortError' || q.value.trim() === term) results.replaceChildren(h('p', { class: 'muted' }, 'Search is not working right now (offline?). Add it by hand below.'));
       }
@@ -320,30 +344,43 @@ function trophySheet(book) {
   const lessons = data.blocks.filter((b) => b.bookId === book.id && isLessonBlock(b)).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   let rating = book.rating || 0;
   const starBox = h('div');
-  const comment = h('textarea', { rows: '4', maxlength: '20000', placeholder: 'Your review' });
+  const comment = h('textarea', { rows: '4', maxlength: '2000', placeholder: 'Your review' });
   comment.value = book.comment || '';
   const drawStars = () => starBox.replaceChildren(stars(rating, (n) => { rating = n; drawStars(); }));
   drawStars();
+  const share = publicSwitch(book, book.publicReview === true); // books finished before 1.2 stay private
   const close = sheet(book.title, h('div', { class: 'form' },
     h('div', { class: 'trophy-head' }, cover(book), h('div', null,
       book.author && h('div', null, book.author),
       h('div', { class: 'muted small' }, `Finished ${book.finishedAt || ''}`))),
     starBox,
     h('label', null, 'Review', comment),
+    share.el,
     lessons.length > 0 && h('div', null, h('div', { class: 'eyebrow' }, '💡 Lessons'), lessons.map((l) => h('p', { class: 'lesson-text small' }, l.text))),
     h('div', { class: 'actions' },
       h('button', { class: 'btn primary', onclick: async () => {
-        await store.save('books', { id: book.id, rating, comment: comment.value.trim() });
+        await store.save('books', { id: book.id, rating, comment: comment.value.trim(), publicReview: share.value() });
+        await store.outboxBump(book.id);
         close();
         toast('Saved');
       } }, 'Save'),
+      fbConfigured() && h('button', { class: 'btn', onclick: () => { close(); openReviews(book); } }, '★ Reviews'),
       h('button', { class: 'btn', onclick: () => { close(); ui.section = 'notebook'; go('journal', book.id); } }, 'Open notebook'),
       h('button', { class: 'btn ghost', onclick: async () => {
-        if (!confirm(`Remove ${book.title}, its notebook and comments?`)) return;
+        if (!confirm(`Remove ${book.title}, its notebook, comments and public review?`)) return;
         for (const b of data.blocks.filter((x) => x.bookId === book.id)) await store.remove('blocks', b.id);
         await store.remove('books', book.id);
+        await store.outboxBump(book.id); // the outbox sees the tombstone and deletes the public review
         close();
       } }, 'Remove'))));
+}
+
+// Reviews for a book in the diary; deleting your own public review there also flips the switch off.
+function openReviews(book) {
+  reviewsSheet({ ...book, onUnpublish: async () => {
+    await store.save('books', { id: book.id, publicReview: false });
+    await store.outboxBump(book.id); // supersedes any upsert still queued for this book
+  } });
 }
 
 // ---------- Settings ----------
@@ -358,6 +395,8 @@ function settingsScreen() {
     const fileIn = h('input', { type: 'file', accept: 'application/json,.json', class: 'hidden-input', onchange: (e) => restoreFrom(e.target.files[0]) });
 
     box.append(
+      fbConfigured() && accountCard(ds, await store.getMeta('deleteJob', false)),
+      fbConfigured() && ds.admin && adminPanel(),
       h('div', { class: 'card' },
         h('h2', null, 'Google Drive backup'),
         !isConfigured() ? h('p', null, 'Not set up yet. Everything is saved on this phone; use "Download backup" until Drive is connected.') :
@@ -401,6 +440,30 @@ function settingsScreen() {
       h('p', { class: 'muted small center' }, `Reading Diary ${VERSION}`));
   })();
   return box;
+}
+
+function accountCard(ds, deleteUnfinished) {
+  const privacy = h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', class: 'muted small' }, 'Privacy: what is public and how to delete it');
+  let body;
+  if (ds.account === 'ready') {
+    body = [
+      deleteUnfinished && h('p', { class: 'note' }, 'Deleting your public data didn\'t finish. Tap the button below to finish it.'),
+      h('p', null, 'Your reader name: ', h('strong', null, `@${ds.handle}`)),
+      h('p', { class: 'muted small' }, 'Public: your stars and review on books you finish with "Post publicly" on. Everything else in this diary stays private.'),
+      h('button', { class: 'btn ghost', onclick: async () => {
+        if (!confirm('Delete all your public reviews and your reviews account? Your private diary stays. Your reader name stays reserved and can\'t be reused.')) return;
+        try { await syncer.deleteMyPublicData(); toast('Your public data is deleted'); render(); } catch (e) { toast(`Couldn't finish (${e.code || e.message}) - try again`); }
+      } }, 'Delete my public data'),
+    ];
+  } else if (ds.account === 'needs-handle') {
+    body = [h('p', null, 'Pick your reader name to share reviews.'), h('button', { class: 'btn primary', onclick: () => handleSheet(render) }, 'Pick a name')];
+  } else if (ds.account === 'wrong-account') {
+    body = [h('p', null, 'This diary belongs to a different Google account. Sign in with that one to back up and share reviews.')];
+  } else {
+    body = [h('p', null, 'Sign in with Google to back up your diary and share reviews with other readers.'),
+      h('button', { class: 'btn primary', onclick: () => syncer.syncNow({ interactive: true }).then(render) }, 'Sign in with Google')];
+  }
+  return h('div', { class: 'card' }, h('h2', null, 'Reader account'), body, privacy);
 }
 
 async function downloadBackup() {
@@ -468,7 +531,8 @@ async function renderPill() {
   const ds = syncer.state;
   let cls = 'grey', text = 'Saved on this phone · Drive not set up';
   if (isConfigured()) {
-    if (ds.drive === 'needs-confirm') { cls = 'amber'; text = `Back up to ${ds.email}? Tap to confirm`; }
+    if (ds.drive === 'wrong-account' || ds.account === 'wrong-account') { cls = 'red'; text = 'Different Google account - tap for details'; }
+    else if (ds.drive === 'needs-confirm') { cls = 'amber'; text = `Back up to ${ds.email}? Tap to confirm`; }
     else if (ds.drive === 'disconnected') { cls = 'red'; text = 'Drive disconnected - tap to reconnect'; }
     else if (ds.drive !== 'connected') {
       // Signed out just means no fresh Google token yet; the truth is what's waiting.
@@ -515,6 +579,12 @@ function setupServiceWorker() {
 }
 
 async function boot() {
+  // GitHub Pages can't send X-Frame-Options, and CSP frame-ancestors doesn't work in a <meta>,
+  // so refuse to run inside someone else's frame (clickjacking).
+  if (window.top !== window.self) {
+    clear(main()).append(h('div', { class: 'card' }, h('p', null, 'Open Reading Diary directly: '), h('a', { href: location.href, target: '_top' }, location.href)));
+    return;
+  }
   try {
     await store.open();
   } catch (e) {
@@ -538,7 +608,12 @@ async function boot() {
     else if (!busy.current()) render(); // a new day: "Not yet" resets, streak updates
   });
   window.addEventListener('pagehide', () => { flushNotebook(); });
-  syncer.onStatus(() => renderPill());
+  let askedHandle = false;
+  syncer.onStatus((s) => {
+    renderPill();
+    // First sign-in: ask for the reader name once per app open.
+    if (s.account === 'needs-handle' && !askedHandle) { askedHandle = true; handleSheet(() => render()); }
+  });
   syncer.start();
   setupServiceWorker();
   await render();

@@ -1,0 +1,77 @@
+rules_version = '2';
+
+// Reading Diary public layer. Contract: PLAN-v1.2.md section 4. Every path is tested allow AND
+// deny in tests/rules.emu.mjs against the emulator before these are deployed.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function isAdmin() { return signedIn() && exists(/databases/$(database)/documents/admins/$(me())); }
+    function exact(d, keys) { return d.keys().hasAll(keys) && d.keys().hasOnly(keys); }
+    function validHandle(h) { return h is string && h.matches('^[a-z0-9_]{3,20}$'); }
+    function validWorkId(w) { return w is string && w.matches('^OL[0-9]{1,12}W$'); }
+    function validUid(u) { return u is string && u.matches('^[A-Za-z0-9]{1,128}$'); }
+
+    // One per account, forever: the permanent sentinel that stops a uid claiming a second handle.
+    match /users/{uid} {
+      allow get: if signedIn() && uid == me();
+      allow create: if signedIn() && uid == me()
+        && exact(request.resource.data, ['handle', 'createdAt'])
+        && validHandle(request.resource.data.handle)
+        && request.resource.data.createdAt == request.time
+        && getAfter(/databases/$(database)/documents/handles/$(request.resource.data.handle)).data.uid == me();
+    }
+
+    // Claimed together with users/{uid} in one batch; never updated or released.
+    match /handles/{h} {
+      allow get: if signedIn();
+      allow create: if signedIn() && validHandle(h)
+        && exact(request.resource.data, ['uid', 'createdAt'])
+        && request.resource.data.uid == me()
+        && request.resource.data.createdAt == request.time
+        && !exists(/databases/$(database)/documents/users/$(me()))
+        && getAfter(/databases/$(database)/documents/users/$(me())).data.handle == h;
+    }
+
+    match /works/{workId}/reviews/{uid} {
+      function validBody(d) {
+        return d.rating is int && d.rating >= 1 && d.rating <= 5
+          && d.text is string && d.text.size() <= 2000
+          && d.updatedAt == request.time;
+      }
+      allow get: if signedIn();
+      allow list: if signedIn() && request.query.limit <= 50;
+      allow create: if signedIn() && uid == me() && validWorkId(workId)
+        && exact(request.resource.data, ['workId', 'uid', 'handle', 'rating', 'text', 'createdAt', 'updatedAt'])
+        && request.resource.data.workId == workId
+        && request.resource.data.uid == me()
+        && request.resource.data.handle == get(/databases/$(database)/documents/users/$(me())).data.handle
+        && request.resource.data.createdAt == request.time
+        && validBody(request.resource.data);
+      // Throttle: one edit per review every 10 seconds, so a script can't hammer the database.
+      allow update: if signedIn() && uid == me()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating', 'text', 'updatedAt'])
+        && validBody(request.resource.data)
+        && request.time > resource.data.updatedAt + duration.value(10, 's');
+      allow delete: if signedIn() && (uid == me() || isAdmin());
+    }
+
+    match /reports/{id} {
+      allow create: if signedIn()
+        && exact(request.resource.data, ['workId', 'reviewerUid', 'uid', 'reason', 'createdAt'])
+        && validWorkId(request.resource.data.workId)
+        && validUid(request.resource.data.reviewerUid)
+        && request.resource.data.uid == me()
+        && id == request.resource.data.workId + '_' + request.resource.data.reviewerUid + '_' + me()
+        && request.resource.data.reason in ['spam', 'mean', 'spoiler', 'other']
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/works/$(request.resource.data.workId)/reviews/$(request.resource.data.reviewerUid));
+      allow get, list, delete: if signedIn() && (isAdmin() || resource.data.uid == me());
+    }
+
+    match /admins/{uid} {
+      allow get: if signedIn() && uid == me();
+    }
+  }
+}

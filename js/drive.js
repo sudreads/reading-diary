@@ -14,6 +14,8 @@ let pending = null;
 export const isConfigured = () => !!GOOGLE_CLIENT_ID;
 export const hasToken = () => !!token && token.expires > Date.now() + 60_000;
 export const forget = () => { token = null; };
+// Handed to Firebase once per sign-in (signInWithCredential); never stored.
+export const accessToken = () => (hasToken() ? token.value : null);
 
 function loadGis() {
   if (window.google?.accounts?.oauth2) return Promise.resolve();
@@ -28,7 +30,8 @@ function loadGis() {
 }
 
 // interactive=false tries silently (works when he already consented and is signed in to Chrome).
-export async function connect({ interactive }) {
+// chooseAccount shows Google's account picker, so a wrong account can be swapped for the right one.
+export async function connect({ interactive, chooseAccount = false }) {
   if (!isConfigured()) throw new Error('not-configured');
   if (hasToken()) return;
   if (pending) return pending;
@@ -47,7 +50,7 @@ export async function connect({ interactive }) {
         },
         error_callback: (e) => rej(new Error(e?.type || 'popup-failed')),
       });
-      tokenClient.requestAccessToken({ prompt: interactive ? '' : 'none' });
+      tokenClient.requestAccessToken({ prompt: !interactive ? 'none' : chooseAccount ? 'select_account' : '' });
     });
   })();
   try { await pending; } finally { pending = null; }

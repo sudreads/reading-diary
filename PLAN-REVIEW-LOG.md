@@ -230,3 +230,153 @@ VERDICT: REVISE
 ### Claude's response
 Accepted: undo only removes today's read:true check-ins; drawing draft saved on visibilitychange/pagehide; fixed paper aspect with text sized in container units so writing and drawing line up on any width; "Not yet" compared to localDate() on every render and re-render on visibility; duplicate check-in guard; comments sorted by (createdAt, id); flush autosave before delete/draw/page change; tests for check-in streaks; Caveat self-hosted (no CSP change, works offline).
 Rejected: extra page-write serialisation (save() already merges the previous record inside one IndexedDB transaction, so text and drawingId never clobber each other locally); read-only legacy drawing pages (tombstoning a legacy block is the same safe operation as any other).
+
+# v1.2 accounts + public reviews - plan review (MAX_ROUNDS=3)
+
+## Round 1 - Codex
+- **Username rules cannot prove the stated normalization:** Firestore Rules cannot reliably lowercase/collapse spaces; client-supplied `displayName`/`nameKey` enables lookalikes and broken uniqueness. **Fix:** use an immutable, rules-verifiable ASCII lowercase handle (`[a-z0-9_-]{3,24}`) as the only public identity.
+
+- **A user can release an active name:** allowing deletion of their username lets another account claim it while old reviews still display that name. **Fix:** never delete claimed handles; reserve them permanently or retain historical aliases.
+
+- **Rename is not atomic at scale:** user-doc update, old-name release, and rewriting reviews cannot fit one atomic operation beyond 500 writes, causing mixed identities and impersonation windows. **Fix:** make public handles immutable in v1; defer rename until a trusted backend migration exists.
+
+- **“`keys().hasOnly`” is insufficient schema validation:** it allows omitted required fields unless paired with `hasAll`, and updates need `diff().affectedKeys()` constraints. **Fix:** enforce exact required keys/types on create and an explicit allowed-field diff on update.
+
+- **Review authorization needs immutable-field checks:** the outline does not explicitly require existing `workId`, `uid`, and `createdAt` to remain unchanged on update. **Fix:** require equality to `resource.data` for all immutable fields and derive/validate document ID from them.
+
+- **Username claiming needs a fully specified atomic rule:** `getAfter()` only helps if the batch must create exactly the claimed username and user record with matching values. **Fix:** require user creation/update and username creation in the same batch, with exact cross-document values and no pre-existing username.
+
+- **Reports can be used for unlimited junk writes:** arbitrary `reviewId` values create unlimited unique report documents. **Fix:** require that the target review exists, restrict `reason` to a short enum, and allow one report per real review per reporter.
+
+- **Client-side moderation is not an abuse-control system:** Google-account throwaways can spam reviews, names, and reports; auth-gating does not rate-limit. **Fix:** add App Check plus conservative client UX limits now, or postpone public posting until a backend can rate-limit and moderate.
+
+- **All signed-in users can scrape the entire community:** `read any` on `users` and `reviews` exposes stable UIDs, handles, book history, review timestamps, and text to any Google account. **Fix:** remove public `users` reads, avoid exposing `uid` in review documents, and state clearly that reviews are public-to-all-members and enumerable.
+
+- **The public review itself may reveal sensitive reading habits:** a teen’s name linked to books and timestamps is personal data, even without email. **Fix:** use pseudonymous handles by default, omit precise timestamps, add clear audience warnings and a “post anonymously/private” default.
+
+- **Email/privacy leakage is under-specified:** Firebase Auth retains account metadata; persistent browser storage and Firestore caches can survive sign-out on a shared device. **Fix:** document this, offer explicit sign-out plus cache-clearing guidance, and do not enable persistent Firestore caching for public reviews unless needed.
+
+- **The `publicReview` flag syncs through Drive and can leak unintentionally across devices:** a device that has not seen the latest opt-out can republish a review. **Fix:** make publication a separate explicit remote state with a monotonic operation revision and reconcile it serially.
+
+- **The outbox has a resurrection race:** an older in-flight upsert may complete after a newer delete/opt-out and recreate the review. **Fix:** serialize operations per review and always run a final state reconciliation after each completion/restart.
+
+- **The outbox “set of bookIds” loses intent/history:** deletion of a book, toggling public state repeatedly, and Drive merge conflicts are not represented durably enough. **Fix:** store per-review desired state plus a monotonically increasing local operation generation, retaining delete tombstones until acknowledged.
+
+- **Deleting account data is not reliably complete from a browser:** reviews/reports may exceed batch limits, fail mid-pagination, and Firebase Auth identity deletion is omitted. **Fix:** provide resumable paginated deletion with progress, retain a local deletion job until confirmed, and explicitly reauthenticate then call Firebase Auth `deleteUser` if that is promised.
+
+- **A deleted/recreated user can leave orphaned content:** if data deletion partially fails, the same Google identity can create a new profile while old reviews remain. **Fix:** block profile recreation until deletion completes, or keep a server-side account state—otherwise do not advertise deletion as complete.
+
+- **Review averages/counts are wrong once a work has over 100 reviews:** a limited page cannot truthfully produce the global average or count. **Fix:** label it “latest 100 reviews” or drop aggregate claims until a trusted aggregation service exists.
+
+- **“Newest first” is not implemented by the stated query:** no `orderBy` is specified, and ordering by `updatedAt` changes historical ordering after edits. **Fix:** explicitly order by a chosen immutable publication timestamp and explain that edits do not reorder reviews.
+
+- **Review metadata is user-forgeable:** any user can attach arbitrary title/author/cover data to a valid Open Library work ID. **Fix:** treat those fields as untrusted display hints or fetch canonical metadata client-side from Open Library.
+
+- **Admin identity is only safe if enforced in rules, not UI:** hiding/showing Delete based on an `admins` read is cosmetic. **Fix:** make every privileged rule check `exists(/databases/$(database)/documents/admins/$(request.auth.uid))` directly.
+
+- **The Firebase project is an attractive combined blast radius:** one project holds Drive OAuth configuration, Auth, and the public database. **Fix:** use separate production Firebase/Google Cloud projects or at least separate OAuth clients and tightly scoped ownership/access.
+
+- **API-key referrer restrictions do not protect Firestore from authenticated abuse:** the public key is not a secret, and abuse travels through valid clients. **Fix:** rely on strict rules/App Check/quota monitoring, not key secrecy, and alert before daily quota exhaustion.
+
+- **Spark quota failure is a service-wide outage, not just an expensive request:** one scrape can consume daily reads; rename rewrites and delete jobs can also consume write/delete quota. **Fix:** impose small page sizes, explicit pagination, usage monitoring, and a hard product decision for what happens when quota is exhausted.
+
+- **Firestore’s offline behavior is not specified:** cached writes can be replayed later after the user believes posting was disabled or after account changes. **Fix:** use memory cache for reviews or clearly expose pending remote writes and cancel/reconcile them on sign-out and account mismatch.
+
+- **The auth-account binding is incomplete:** Firebase’s persisted user, the GIS token account, and the Drive-confirmed account can diverge across sessions. **Fix:** after every GIS response, compare the Firebase UID/account identity and Drive userinfo email against the bound owner before any Drive or Firestore operation.
+
+- **`profile` is unnecessary for the described product:** custom public handles do not need Google profile access. **Fix:** request only `openid email drive.appdata` and avoid importing/displaying Google profile data.
+
+- **Production OAuth readiness is optimistic:** GitHub Pages may not satisfy branding/domain-verification and privacy-policy ownership requirements for a public production OAuth app. **Fix:** validate production consent-screen/domain ownership with Google before implementation; plan a verified custom domain if required.
+
+- **The privacy policy is not enough for a teen-facing public community:** it needs age/parental-consent handling where applicable, community rules, reporting response expectations, and a contact/deletion path. **Fix:** restrict launch to an appropriate age/jurisdiction or add these safeguards before inviting general users.
+
+- **No backend means no durable moderation, audit trail, or emergency response:** Yanai’s manual console account cannot realistically handle abuse at community scale. **Fix:** keep this private/beta-only with invite-only testers, or add a managed moderation backend before public launch.
+
+- **Live REST “negative tests” are a poor rules-test fallback:** they risk polluting production and cannot cover auth/race matrices safely. **Fix:** require the emulator/JDK setup before release and test every allow/deny path plus multi-write batches.
+
+VERDICT: REVISE
+### Claude's response (round 1)
+Accepted most findings - see "Revisions after Codex round 1" in PLAN-v1.2.md. Biggest changes: invite-only beta (Testing mode), immutable unreleasable handles with no rename, exact-schema rules, narrowed reads, recompute-at-drain outbox under the sync lock, memory-only Firestore cache, emulator-tested rules. Rejected: separate projects, App Check for the beta, default-private reviews (user's decision), dropping uid from reviews.
+
+## Round 2 - Codex
+- **The proposed per-work query rule is not implementable:** Firestore Rules cannot inspect a query’s `where('workId','==', X)` value, so they cannot enforce “list only with a workId filter”; this either blocks review queries or permits broad collection scans. **Fix:** store reviews at `works/{workId}/reviews/{uid}` and authorize reads by the captured `{workId}` path.
+
+- **The dirty-set outbox still loses a concurrent change:** if a book changes while its upsert is in flight, the acknowledgement can remove the same set entry and permanently drop the required follow-up delete/upsert. **Fix:** record a per-book mutation generation and clear an entry only if its generation still matches after acknowledgement.
+
+- **“Month + year only” is presentation, not privacy:** any signed-in client receiving a review document can read the exact `createdAt` timestamp via the SDK. **Fix:** store a public month bucket/date only, or accept and disclose that exact post times are visible to all beta users.
+
+- **Delete-my-data conflicts with immutable user rules:** the revision disallows all client deletes on `users`, but the deletion promise says public account data is deleted; the user document will remain indefinitely. **Fix:** either permit owner deletion of `users/{uid}` as the final deletion step or explicitly retain it in the privacy policy and provide admin cleanup.
+
+- **Report deletion cannot work as written:** reporters cannot read/list reports and only admins may delete them, so a user cannot find and delete their own reports during the resumable deletion job. **Fix:** allow reporters to query and delete only documents where `resource.data.uid == request.auth.uid`.
+
+- **The plan still contains contradictory authoritative-looking sections:** the original schema, username/rename flow, review fields, scope, query limit, and live-testing fallback conflict with the revisions. **Fix:** consolidate the document before implementation so developers and tests have one unambiguous data model and rules contract.
+
+- **The Testing-mode beta needs an explicit reauthorization expectation:** Google OAuth testing-mode authorization can require users to re-consent periodically, which affects Drive-token acquisition even if Firebase remains signed in. **Fix:** state the expected reconnect/re-consent behavior in beta onboarding and test it with a test-user account.
+
+VERDICT: REVISE
+### Claude's response (round 2)
+Accepted all seven: reviews moved to works/{workId}/reviews/{uid} so rules authorise by path; per-book generation in the outbox; exact post times disclosed; owner may delete users/{uid} as the last delete step; reporters can list/delete own reports; plan consolidated into one authoritative document; Testing-mode re-consent stated in onboarding.
+
+## Round 3 - Codex
+- **The collection-group delete rule reopens broad cross-work scraping:** the permissive `works/{workId}/reviews/{uid}` `list` rule also matches documents returned by a `collectionGroup('reviews')` query, so any signed-in member can query up to 50 reviews across all works; the “own only” collection-group rule does not override an already-allowed overlapping match. **Fix:** do not use a collection-group query over the public `reviews` collection; delete known review paths from the merged diary, or maintain a separate owner-only review-reference index.
+
+- **Deleting `users/{uid}` permits an effective handle rename and handle hoarding:** a user can directly delete their user doc, retain their Firebase account, then claim another handle because handle creation only checks that `users/{uid}` is absent. **Fix:** create a permanent per-UID account sentinel during the initial claim and require it not to have existed before any future handle claim, while leaving it undeletable.
+
+- **The rules test suite must include the overlap attack:** testing only the intended own-UID collection-group query will not expose the permissive matching rule. **Fix:** add an explicit denied test for a signed-in non-owner collection-group query limited to 50, before deploying rules.
+
+VERDICT: REVISE
+### Claude's response (round 3)
+Accepted all three: no collection-group queries (delete-my-data uses known paths from the diary), users/{uid} undeletable as a permanent per-account sentinel, explicit denied tests for both. MAX_ROUNDS=3 reached without a final APPROVED; the round-3 fixes are narrow and will be proven by the emulator rules tests rather than another review round.
+
+## v1.2 post-build inspection (Codex, fresh read-only session)
+## PR findings
+
+1. **Critical — collection-group reads are allowed despite the explicit prohibition.**  
+   **File:** `firestore.rules:37-55`  
+   **Failure:** `allow list` on `works/{workId}/reviews/{uid}` authorizes a `collectionGroup('reviews')` query with `limit(50)`. The rule cannot tell that the query originated as a collection-group query, so a signed-in member can enumerate reviews across books, contrary to PLAN §4/§10. The inlined “denied” test should fail against these rules.  
+   **Fix:** Redesign the readable-review query/schema so the rules can authorize only the intended per-work query (or remove client `list` access); do not rely on this match to block collection groups.
+
+2. **Critical — public reviews can be resurrected after “Delete my public data.”**  
+   **File:** `js/syncer.js:108-145`, `js/social.js:37-45`  
+   **Failure:** A drain snapshots `reviewOutbox` and writes under lock name `rd-reviews`, while deletion clears the outbox and deletes remote reviews without that same lock. An already-running drain can upsert a review after its deletion, then the Firebase account is deleted—leaving public content the user can no longer remove. This violates PLAN §6/§8.  
+   **Fix:** Use the same sync lock for drain, deletion, sign-out, and identity transitions; cancel/await an active drain before deleting public data.
+
+3. **High — delete-account regularly fails because no fresh Firebase credential is obtained.**  
+   **File:** `js/firebase.js:34-39,125-130`  
+   **Failure:** `signInWithGoogleToken` returns the existing Firebase user when its email matches, so `deleteMyPublicData()` calls `user.delete()` with an old session. Firebase commonly rejects this with `auth/requires-recent-login`, despite PLAN §8 requiring deletion immediately after fresh credential sign-in.  
+   **Fix:** Reauthenticate/sign in with the fresh GIS credential immediately before `currentUser.delete()`; never take the same-email shortcut for this flow.
+
+4. **High — deletion is not resumable and destroys its recovery queue before success.**  
+   **File:** `js/syncer.js:136-145`  
+   **Failure:** It clears `meta.reviewOutbox` before any remote delete succeeds, with no persisted deletion-job progress. Offline/error/permission failures leave undeleted public reviews and no durable resume state, contrary to PLAN §8.  
+   **Fix:** Persist a resumable deletion job and only remove each item/progress marker after its confirmed remote deletion.
+
+5. **High — a persisted Firebase session can bind a fresh diary to the wrong Google account without a GIS/email check.**  
+   **File:** `js/syncer.js:21-33,159-163`  
+   **Failure:** On startup, `fb.currentUser()` calls `bindAccount()` and writes `meta.ownerUid` before a GIS response, `userinfo` email check, or Drive-account confirmation. A stale Firebase session in the browser can permanently bind the local diary and block its actual owner. This violates PLAN §2’s binding sequence.  
+   **Fix:** Only set `ownerUid` after a fresh paired GIS/Firebase sign-in verifies both `userinfo.email` and Firebase UID; startup may only reuse an already-bound matching UID.
+
+6. **Medium — the required Firebase/userinfo identity equality is never checked.**  
+   **File:** `js/syncer.js:41-48`, `js/firebase.js:34-39`  
+   **Failure:** The code checks the GIS `userinfo` email against `confirmedEmail`, but never verifies that the Firebase user returned from the access-token exchange has that same email before Drive/Firestore work begins. PLAN §2 requires both checks after every GIS response.  
+   **Fix:** After credential exchange, require normalized `user.email === state.email` and `user.uid === ownerUid` before any Drive or Firestore operation.
+
+7. **Medium — deleting one’s review does not bump the review outbox.**  
+   **File:** `js/app.js:378-381`, `js/reviews.js:81-89`  
+   **Failure:** `onUnpublish` saves `publicReview:false` but does not call `outboxBump`. A queued/in-flight upsert, or a later local state reconciliation, can repost the review after the user deleted it. PLAN §6 requires every `publicReview` change to bump its book generation.  
+   **Fix:** Make `onUnpublish` save `publicReview:false` and then `await store.outboxBump(book.id)` before considering deletion complete.
+
+8. **Low — Firebase SDK version deviates from the locked plan.**  
+   **File:** `js/firebase.js:6`  
+   **Failure:** Code imports Firebase `12.19.0`; PLAN §2 locks `12.0.0`. This changes the reviewed dependency surface without updating the authoritative plan.  
+   **Fix:** Use `12.0.0` or explicitly update PLAN-v1.2 and re-run the relevant browser/rules checks.
+### Claude's dispositions
+- 1 rejected with evidence: under rules_version 2 a collection-group query is only matched by `{path=**}` rules; tests/rules.emu.mjs "collection-group queries across all books are refused" runs exactly that query (limit 50, with and without a uid filter) against the emulator and it is denied.
+- 2 accepted: delete-my-data waits on the same 'rd-reviews' lock as the drain.
+- 3 already fixed (from the review-skill pass): reauthenticateWithCredential with a fresh token before user.delete().
+- 4 accepted: outbox cleared only after the deletes succeed; a persisted deleteJob flag shows "finish deleting" if interrupted.
+- 5 already handled: startup loads Firebase only when ownerUid is already set, so bindAccount at startup can only compare, never write.
+- 6 accepted: Firebase user email must equal the GIS userinfo email, else sign out and wrong-account.
+- 7 accepted: deleting your own review from the sheet bumps the outbox.
+- 8 accepted: plan updated to 12.19.0 (latest 12.x older than two weeks; same version as the rules-test dependency).
+Same-model review-skill pass also fixed: Firebase failure blocking Drive, stale ownerUid after delete, concurrent SDK init, SDK fetched for never-signed-in users, no escape from wrong-account.

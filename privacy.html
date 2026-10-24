@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'">
+  <title>Reading Diary privacy</title>
+  <link rel="icon" href="icons/icon-192.png">
+  <style>
+    :root { --bg: #f6f1e7; --ink: #1d1b16; --muted: #6f675a; --card: #fffdf8; --line: #e5dccb; --accent: #c2410c; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #17150f; --ink: #f1ebdf; --muted: #a99f8d; --card: #221f18; --line: #3a3427; --accent: #f97316; } }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 1.7rem; margin: 0 0 4px; } h2 { font-size: 1.15rem; margin: 28px 0 8px; color: var(--accent); }
+    .muted { color: var(--muted); } section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px 16px 12px; margin-top: 14px; }
+    a { color: var(--accent); } ul { padding-left: 20px; } li { margin: 4px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Reading Diary - privacy</h1>
+  <p class="muted">Plain-language version. Last updated 24 October 2026. Reading Diary is an invite-only beta run by one person.</p>
+
+  <section>
+    <h2>Private - only you</h2>
+    <ul>
+      <li>Your notebook pages, drawings, comments, lessons, streak and reading log.</li>
+      <li>Stored on your phone, and backed up to a hidden folder in <strong>your own</strong> Google Drive that only this app can open. Nobody else, including the person running the app, can read it.</li>
+      <li>Ratings and reviews on books where "Post publicly" is off.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Public - every signed-in beta member</h2>
+    <ul>
+      <li>Your reader name (@handle).</li>
+      <li>For books you finish with "Post publicly" on: your star rating, your review text, which book it is, and the exact time you posted or edited it (the app shows month and year, but the exact time is in the data).</li>
+      <li>Your email address and your Google profile are never shown or stored in the public database.</li>
+      <li>Public reviews are stored in Google Firebase (Firestore), run by Google.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Community rules</h2>
+    <ul>
+      <li>Review the book, not people. No insults, hate, or personal information about anyone.</li>
+      <li>Warn before big spoilers - better, leave them out.</li>
+      <li>No ads or spam. Don't use your full real name as your reader name.</li>
+      <li>Tap <strong>Report</strong> on any review that breaks these rules. The admin can delete any review.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Deleting your data</h2>
+    <ul>
+      <li>Turn off "Post publicly" on a book, or delete your review from its Reviews page, to remove that review.</li>
+      <li>Settings → <strong>Delete my public data</strong> removes all your public reviews, your reports and your reviews sign-in. Your reader name stays reserved so nobody else can use it to pretend to be you.</li>
+      <li>Your private diary is yours: Settings → Download backup gives you a copy; uninstalling the app and deleting the app's data in Google Drive (Drive → Settings → Manage apps) removes it.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Contact</h2>
+    <p>Questions or removal requests: ask the person who invited you to the beta, or open an issue at <a href="https://github.com/sudreads/reading-diary/issues">github.com/sudreads/reading-diary</a>.</p>
+  </section>
+
+  <p><a href="./">← Back to Reading Diary</a></p>
+</main>
+</body>
+</html>

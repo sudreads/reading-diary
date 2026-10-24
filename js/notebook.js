@@ -9,7 +9,7 @@ import { rankBetween, compareRanked } from './rank.js';
 import { MAX_DRAWING_BYTES } from './validate.js';
 
 const W = 1080, H = 1440;
-const COLORS = ['#1d1b16', '#c2410c', '#1d4ed8', '#15803d'];
+const COLORS = ['#1d1b16', '#c2410c', '#1d4ed8', '#15803d', '#ffffff'];
 const WIDTHS = [5, 16];
 
 // Pages in order. Legacy drawing blocks from 1.0 show as pages holding that drawing.

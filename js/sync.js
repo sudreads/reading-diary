@@ -48,10 +48,10 @@ export async function runSync({ store, drive, deviceId, now = () => Date.now() }
   return { ok: true, gen, notes };
 }
 
-// Only one cycle per device at a time, across tabs too.
-export function withSyncLock(locks, fn) {
+// Only one cycle per device at a time, across tabs too. The review outbox uses its own lock name.
+export function withSyncLock(locks, fn, name = 'rd-sync') {
   if (!locks || typeof locks.request !== 'function') return fn();
-  return locks.request('rd-sync', { ifAvailable: true }, (lock) => (lock ? fn() : { ok: false, busy: true }));
+  return locks.request(name, { ifAvailable: true }, (lock) => (lock ? fn() : { ok: false, busy: true }));
 }
 
 export function backoffMs(failures) {
