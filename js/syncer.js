@@ -6,6 +6,7 @@ import * as drive from './drive.js';
 import * as fb from './firebase.js';
 import { runSync, withSyncLock, backoffMs } from './sync.js';
 import { drainOutbox } from './social.js';
+import { signOutReady, backupCovers } from './signout.js';
 import { EXPECTED_EMAIL } from './config.js';
 
 // account: 'off' (no Firebase), 'signed-out', 'needs-handle', 'ready', 'wrong-account'
@@ -41,7 +42,11 @@ async function ensureConnected(interactive) {
   try {
     const chooseAccount = state.drive === 'wrong-account' || state.account === 'wrong-account';
     await drive.connect({ interactive, chooseAccount });
-    state.email = await drive.whoAmI();
+    const who = await drive.whoAmI();
+    state.email = who.email;
+    // Google's permanent account id is the real owner check; emails can change hands.
+    const ownerSub = await store.getMeta('ownerGoogleSub', '');
+    if (ownerSub && who.sub !== ownerSub) { drive.forget(); state.drive = 'wrong-account'; return false; }
     let confirmed = await store.getMeta('confirmedEmail', '');
     // First sign-in on this device: he just picked this account in Google's own chooser, so
     // asking "use this account?" again only looked like a second sign-up. Later mismatches still ask.
@@ -49,12 +54,19 @@ async function ensureConnected(interactive) {
       confirmed = state.email;
       await store.setMeta('confirmedEmail', confirmed);
     }
-    if (state.email !== confirmed && (!EXPECTED_EMAIL || state.email !== EXPECTED_EMAIL)) { state.drive = 'needs-confirm'; return false; }
+    if (state.email !== confirmed && (!EXPECTED_EMAIL || state.email !== EXPECTED_EMAIL)) {
+      // A phone already bound to a reader account never adopts another one ("use this one?" would
+      // only create a stray account); diaries from before accounts still get asked.
+      if (await store.getMeta('ownerUid', '')) { drive.forget(); state.drive = 'wrong-account'; return false; }
+      state.drive = 'needs-confirm';
+      return false;
+    }
     if (fb.isConfigured()) {
       // A broken public layer must never stop the private Drive backup; only a wrong account does.
       try {
         const user = await fb.signInWithGoogleToken(drive.accessToken(), state.email);
-        const sameEmail = (user.email || '').toLowerCase() === state.email.toLowerCase();
+        const googleId = user.providerData?.find((p) => p.providerId === 'google.com')?.uid;
+        const sameEmail = (user.email || '').toLowerCase() === state.email.toLowerCase() && (!googleId || googleId === who.sub);
         if (!sameEmail || !(await bindAccount(user))) {
           if (!sameEmail) { await fb.signOut(); state.account = 'wrong-account'; }
           drive.forget();
@@ -67,6 +79,8 @@ async function ensureConnected(interactive) {
         await store.log('reviews-sign-in', false, state.accountError);
       }
     }
+    if (!ownerSub && who.sub) await store.setMeta('ownerGoogleSub', who.sub);
+    await store.setMeta('ownerEmail', who.email); // shown in Settings: "signed in as"
     state.drive = 'connected';
     return true;
   } catch (e) {
@@ -84,6 +98,7 @@ export async function confirmAccount() {
 }
 
 export async function syncNow({ interactive = false } = {}) {
+  if (stopped) return; // signed out: this tab must never touch Drive again
   clearTimeout(debounce);
   clearTimeout(retry);
   if (!navigator.onLine) { state.error = 'offline'; emit(); return; }
@@ -97,6 +112,10 @@ export async function syncNow({ interactive = false } = {}) {
     state.failures = 0;
     state.error = '';
     await store.log('sync', true, res.notes.join(','));
+    if (!(await store.getMeta('reviewsReconciled', false))) {
+      for (const b of await store.list('books')) if (b.publicReview === true) await store.outboxBump(b.id);
+      await store.setMeta('reviewsReconciled', true);
+    }
     if ((await store.status()).pending > 0) scheduleSoon(); // edits landed mid-cycle
   } catch (e) {
     state.failures++;
@@ -127,6 +146,7 @@ export async function claimHandle(handle) {
 }
 
 export async function drainReviews() {
+  if (stopped) return;
   clearTimeout(drainTimer);
   if (state.account !== 'ready' || !navigator.onLine) return;
   const entries = await store.getMeta('reviewOutbox', {});
@@ -174,7 +194,84 @@ export async function deleteMyPublicData() {
   emit();
 }
 
+// ----- sign out -----
+
+const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('reading-diary') : null;
+let stopped = false;
+
+function stopAll() {
+  stopped = true;
+  clearTimeout(debounce); clearTimeout(retry); clearTimeout(drainTimer);
+  drive.forget();
+}
+
+// Wipes this phone only after proving Drive holds everything. Throws a plain-language reason if
+// anything is not provably safe; nothing is deleted in that case. say() reports progress.
+export async function signOut(say = () => {}) {
+  const fail = (msg) => { throw new Error(msg); };
+  if (!navigator.onLine) fail(signOutReady({ online: false }));
+
+  say('Connecting to your Google Drive…');
+  if (!(await ensureConnected(true))) {
+    fail(state.drive === 'wrong-account' ? 'Pick the Google account this diary belongs to, then try again.' : 'Couldn\'t connect to Google Drive. Try again.');
+  }
+
+  say('Saving everything to Drive…');
+  const deviceId = await store.getMeta('deviceId');
+  const lock = (name, fn) => (navigator.locks ? navigator.locks.request(name, fn) : fn());
+  try {
+    await lock('rd-sync', () => runSync({ store, drive: drive.driveApi, deviceId }));
+  } catch (e) {
+    fail(e.message === 'token-expired' ? 'Google sign-in expired. Tap Try again to reconnect.' : `Couldn't save to Drive (${e.message}). Check your internet and try again.`);
+  }
+  say('Posting your public reviews…');
+  await drainReviews();
+
+  say('Checking the backup…');
+  const st = await store.status();
+  const reason = signOutReady({
+    online: navigator.onLine, mutationGen: st.mutationGen, syncedThroughGen: st.syncedThroughGen,
+    unsentDrawings: (await store.pendingDrawings()).length,
+  });
+  if (reason) fail(reason);
+  const local = await store.snapshot();
+  const remote = await drive.driveApi.downloadJson(await store.getMeta('myFileId')).catch(() => null);
+  const gap = backupCovers(local, remote);
+  if (gap) fail(`The Drive backup isn't complete yet (${gap}). Try again in a moment.`);
+  const names = await drive.driveApi.listDrawingNames().catch((e) => fail(`Couldn't check drawings in Drive (${e.message}). Try again.`));
+  for (const b of local.blocks.filter((x) => !x.deleted && x.drawingId)) {
+    if (!names.has(`drawing-${b.drawingId}.webp`)) fail('A drawing is missing from Drive. Try again in a moment.');
+    const mine = await store.getDrawing(b.drawingId);
+    const back = await drive.driveApi.downloadDrawing(b.drawingId).catch(() => null);
+    if (!back || (mine && back.size !== mine.blob.size)) fail('A drawing in Drive doesn\'t match this phone. Try again in a moment.');
+  }
+
+  // Last look right before wiping: an edit that slipped in during the checks stops it here.
+  const last = await store.status();
+  if (last.mutationGen !== st.mutationGen || last.mutationGen !== last.syncedThroughGen) fail('Something changed while checking. Try again.');
+
+  say('Signing out…');
+  channel?.postMessage('signing-out');
+  stopAll();
+  await fb.signOut();
+  if (await fb.currentUser()) fail('Couldn\'t sign out of the reader account. Try again.');
+  try { await store.wipe(); } catch (e) {
+    const err = new Error(e.message === 'blocked'
+      ? 'Your diary is safely in Drive. Reading Diary is still open in another tab: close it, then reload to finish signing out.'
+      : `Your diary is safely in Drive, but this phone couldn't be cleared (${e.message}). Reload and try again.`);
+    err.reload = true;
+    throw err;
+  }
+}
+
 export function start() {
+  channel?.addEventListener('message', (e) => {
+    if (e.data !== 'signing-out') return;
+    stopAll();
+    store.kill(); // this tab can never write the old diary back
+    state.signedOut = true;
+    emit();
+  });
   store.onChange((why) => {
     if (why === 'outbox') { clearTimeout(drainTimer); drainTimer = setTimeout(drainReviews, 1500); }
     else if (why !== 'merge') scheduleSoon();

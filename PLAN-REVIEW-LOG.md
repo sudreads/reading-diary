@@ -400,3 +400,43 @@ VERDICT: REVISE
 ### Claude's response
 Accepted: offline access for a device that already holds diary data (gate shows "sign in when you're online" and lets you in); check-in re-evaluated after the handle sheet closes and when the notebook goes idle; a local-midnight timer re-runs the check.
 Rejected: "condition inverted" (misread - the plan says Not yet was NOT chosen today); separate day key (localDate() is already the single day function used for sessions and rd-notyet); fail-closed on missing config (the config is a constant compiled into the app, not something that can go missing at runtime).
+
+# v1.4 sign out - plan review (MAX_ROUNDS=3)
+
+## Round 1 - Codex
+- Other tabs can keep the old database open or write/sync after the pre-flight check, causing loss or old-account data to reappear. Fix: implement an app-wide sign-out maintenance mode/epoch that every writer and sync worker honors, broadcast it to all tabs, close them, and abort wipe unless all acknowledge quiescence.
+
+- Holding `rd-sync` does not prevent edits, so a mutation can land after the final `syncedThroughGen` check and before deletion. Fix: make all mutations acquire/check the same exclusive maintenance barrier and re-check the generation only after writers are frozen.
+
+- `onblocked` only asks the user to close tabs; it does not guarantee stale tabs or their in-memory Drive tokens stop operating. Fix: treat any blocked deletion or missing cross-tab acknowledgement as a hard failure, with no reload or account transition.
+
+- Metadata re-read proves only that a Drive file exists, not that its uploaded contents are complete, parseable, and match the final local snapshot. Fix: verify uploads by downloading and validating a content hash/schema for the just-uploaded JSON and every required drawing before marking ready.
+
+- The drawing check trusts local `uploaded:false`, which cannot prove that files marked uploaded still exist or are readable in Drive. Fix: verify every live drawing reference has a readable, matching remote object during sign-out pre-flight.
+
+- Firebase and Drive identity are only loosely correlated through email/UID checks, allowing a stale or mismatched provider session to back up one person’s diary into another Google account. Fix: persist and require a single immutable Google `sub` identity bound to the Firebase owner credential before any Drive operation.
+
+- A failed or incomplete `Firebase.signOut`, `drive.forget`, or IndexedDB deletion can leave the old account auto-restorable after reload while the UI presents a fresh gate. Fix: await and verify each cleanup step, and fail closed without reload until local auth state and database deletion are confirmed.
+
+- “Sign out anyway” after a browser download event is not a durable backup guarantee; the export may be blocked, incomplete, unreadable, or immediately deleted. Fix: remove the destructive bypass, or label it irreversible and require an independently verified restoreable backup before enabling it.
+
+- The wipe list omits account-bearing state outside `reading-diary` and `rd-*` (notably Firebase persistence and any app-owned caches/auxiliary stores). Fix: inventory and clear all app data namespaces explicitly, then verify no old owner/session identifiers remain before reload.
+
+- The proposed browser test does not exercise real cross-account boundaries, blocked deletion, multiple tabs, edits during sign-out, or cleanup failure paths. Fix: add adversarial browser tests for each scenario and assert neither account can read, upload, or resurrect the other’s diary.
+
+VERDICT: REVISE
+### Claude's response (round 1)
+Accepted most; see "Revisions after Codex round 1" in PLAN-v1.4.md. Rejected a full cross-tab ack protocol (a blocked deleteDatabase already proves another tab holds the DB and is treated as hard failure) and drawing content hashing (immutable uploads + presence check).
+
+## Round 2 - Codex
+- The broadcast/delete approach still has a stale-tab resurrection race: a tab can close its DB, retain old diary/Drive-token state in memory, then reopen and write after deletion, exposing the prior account to the next user. Fix: require every mutation and sync to take a shared exclusive session lock and validate a durable sign-out/session epoch before writing or uploading.
+
+- The JSON proof checks only record `rev`, but blocks have independently merged `rankRev`; a reordered block can be silently reverted while its record revision appears sufficiently new. Fix: verify the downloaded device file dominates the local snapshot under the full merge rule, including `rankRev` and every independently versioned field.
+
+- Rejecting drawing-content verification is unsafe: an immutable filename proves neither that the object is readable nor that it contains this drawing, so a corrupt/incorrect upload can pass pre-flight and then be irrecoverable after wipe. Fix: download each live referenced drawing and compare its SHA-256 (or at least decoded bytes and expected size) with the local blob.
+
+- The tests still do not prove account isolation after a phone handoff, especially with an old tab open or a second Google account selected. Fix: add a two-account, two-tab browser test that confirms the new account starts with no old local/Drive data and that stale tabs cannot recreate or upload the previous session.
+
+VERDICT: REVISE
+### Claude's response (round 2)
+Accepted all four, folded into the build: stale tabs go dead on the broadcast (store refuses every operation, syncer stops, Drive token dropped) and the deleted database is the durable barrier - any reopen starts empty behind the sign-in gate; backup proof uses the full merge rule (merging the local record into the remote one must change nothing, rev and rankRev); every live drawing is downloaded back and its byte size compared with the local blob; the two-account handoff is tested on Yanai's phone with his second account (cannot be automated here). Round 3 skipped: the remaining points are concrete and get checked by the post-build review.

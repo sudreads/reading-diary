@@ -32,6 +32,33 @@ export async function open() {
 }
 
 export function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+
+// Sign out: after kill() every store call throws (db is null), so a stale tab can't write the old
+// diary back. The deleted database is the durable barrier - reopening starts empty.
+export function kill() {
+  if (db) db.close();
+  db = null;
+  listeners.clear();
+}
+
+function deleteDb(name) {
+  return new Promise((res, rej) => {
+    const r = indexedDB.deleteDatabase(name);
+    r.onsuccess = () => res();
+    r.onerror = () => rej(r.error || new Error(`could not delete ${name}`));
+    r.onblocked = () => rej(new Error('blocked'));
+  });
+}
+
+export async function wipe() {
+  kill();
+  await deleteDb(DB_NAME);
+  // Not firebaseLocalStorageDb: the Firebase SDK in this very tab keeps it open (always "blocked").
+  // Firebase's signOut() clears the saved session there; the caller verifies that first.
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith('rd-')) localStorage.removeItem(k);
+  } catch { /* storage blocked: nothing of ours is in it then */ }
+}
 const emit = (why) => listeners.forEach((fn) => fn(why));
 
 export async function getMeta(key, dflt) {

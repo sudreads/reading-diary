@@ -66,9 +66,10 @@ async function call(url, opts = {}, as = 'json') {
   return r;
 }
 
+// sub is Google's permanent account id; email is for showing who you are.
 export async function whoAmI() {
   const u = await call('https://openidconnect.googleapis.com/v1/userinfo');
-  return u.email || '';
+  return { email: u.email || '', sub: u.sub || '' };
 }
 
 const q = (s) => encodeURIComponent(s);
@@ -124,6 +125,7 @@ export const driveApi = {
     const found = await listByName(`name = '${name}' and trashed = false`);
     if (!found.length) await create(name, blob, 'image/webp');
   },
+  listDrawingNames: async () => new Set((await listByName("name contains 'drawing-' and trashed = false")).map((f) => f.name)),
   async downloadDrawing(id) {
     const found = await listByName(`name = 'drawing-${id}.webp' and trashed = false`);
     if (!found.length) return null;

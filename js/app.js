@@ -10,7 +10,7 @@ import { isConfigured as fbConfigured } from './firebase.js';
 import { workIdOf } from './social.js';
 import { reviewsSheet, handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '1.3.1';
+const VERSION = '1.4.0';
 const TABS = [
   { id: 'now', label: 'Now', icon: '📖' },
   { id: 'journal', label: 'Notebook', icon: '📓' },
@@ -469,7 +469,8 @@ function settingsScreen() {
 
     // Native append() would print a skipped card (false) as the word "false", so filter first.
     box.append(...[
-      fbConfigured() && accountCard(ds, await store.getMeta('deleteJob', false)),
+      fbConfigured() && accountCard(ds, await store.getMeta('deleteJob', false),
+        { uid: await store.getMeta('ownerUid', ''), email: await store.getMeta('ownerEmail', '') }),
       fbConfigured() && ds.admin && adminPanel(),
       h('div', { class: 'card' },
         h('h2', null, 'Google Drive backup'),
@@ -516,13 +517,17 @@ function settingsScreen() {
   return box;
 }
 
-function accountCard(ds, deleteUnfinished) {
+function accountCard(ds, deleteUnfinished, owner) {
   const privacy = h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', class: 'muted small' }, 'Privacy: what is public and how to delete it');
+  // Who this diary belongs to - shown whenever the phone is bound to an account.
+  const who = owner.uid && h('div', { class: 'whoami' },
+    h('div', { class: 'whoami-name' }, ds.handle ? `@${ds.handle}` : 'No reader name yet'),
+    h('div', { class: 'muted small' }, owner.email || ds.email || 'Google account'));
+  const signOutBtn = owner.uid && h('button', { class: 'btn', onclick: signOutSheet }, 'Sign out');
   let body;
   if (ds.account === 'ready') {
     body = [
       deleteUnfinished && h('p', { class: 'note' }, 'Deleting your public data didn\'t finish. Tap the button below to finish it.'),
-      h('p', null, 'Your reader name: ', h('strong', null, `@${ds.handle}`)),
       h('p', { class: 'muted small' }, 'Public: your stars and review on books you finish with "Post publicly" on. Everything else in this diary stays private.'),
       h('button', { class: 'btn ghost', onclick: async () => {
         if (!confirm('Delete all your public reviews and your reviews account? Your private diary stays. Your reader name stays reserved and can\'t be reused.')) return;
@@ -537,7 +542,38 @@ function accountCard(ds, deleteUnfinished) {
     body = [h('p', null, 'Sign in with Google to back up your diary and share reviews with other readers.'),
       h('button', { class: 'btn primary', onclick: () => syncer.syncNow({ interactive: true }).then(render) }, 'Sign in with Google')];
   }
-  return h('div', { class: 'card' }, h('h2', null, 'Reader account'), body, privacy);
+  return h('div', { class: 'card' }, h('h2', null, 'Reader account'), who, body, signOutBtn && h('div', { class: 'actions' }, signOutBtn), privacy);
+}
+
+function signOutSheet() {
+  const steps = h('ul', { class: 'steps-live' });
+  const out = h('div', { class: 'form' });
+  const go = h('button', { class: 'btn primary', onclick: run }, 'Sign out');
+  out.append(
+    h('p', null, 'Everything in this diary is saved to your Google Drive first. Then this phone is cleared so someone else can sign in. Sign back in any time to get it all back.'),
+    steps, go);
+  const close = sheet('Sign out', out);
+  async function run() {
+    go.disabled = true;
+    go.textContent = 'Working…';
+    steps.replaceChildren();
+    try {
+      await syncer.signOut((t) => steps.append(h('li', null, t)));
+      steps.append(h('li', null, 'Done - restarting…'));
+      setTimeout(() => location.reload(), 600);
+    } catch (e) {
+      steps.append(h('li', { class: 'bad' }, e.message));
+      go.disabled = false;
+      go.textContent = e.reload ? 'Reload' : 'Try again';
+      if (e.reload) go.onclick = () => location.reload();
+      if (!out.querySelector('.backup-escape')) {
+        out.append(h('div', { class: 'backup-escape' },
+          h('p', { class: 'muted small' }, 'Nothing was deleted. You can also keep a copy on this phone:'),
+          h('button', { class: 'btn', onclick: downloadBackup }, 'Download backup')));
+      }
+    }
+  }
+  return close;
 }
 
 async function downloadBackup() {
@@ -684,6 +720,12 @@ async function boot() {
   window.addEventListener('pagehide', () => { flushNotebook(); });
   let askedHandle = false;
   syncer.onStatus((s) => {
+    if (s.signedOut) { // another tab signed out: this one's diary is gone
+      document.body.classList.add('gated');
+      clear(main()).append(h('div', { class: 'gate' }, h('h1', null, 'Signed out'), h('p', null, 'You signed out in another tab.'),
+        h('button', { class: 'btn primary', onclick: () => location.reload() }, 'Reload')));
+      return;
+    }
     renderPill();
     // First sign-in: ask for the reader name once per app open.
     if (s.account === 'needs-handle' && !askedHandle) { askedHandle = true; handleSheet(() => render()); }
