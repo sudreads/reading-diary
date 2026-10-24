@@ -304,6 +304,18 @@ details summary { cursor: pointer; font-weight: 650; padding: 6px 0; }
 .stars-inline.lg { font-size: 1.3rem; }
 .report-row { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
 
+/* ---------- 1.3: sign-in gate + daily check-in ---------- */
+body.gated .tabbar, body.gated #pill { display: none; }
+.gate { min-height: 75vh; display: grid; align-content: center; justify-items: center; gap: 14px; text-align: center; padding: 24px 8px; }
+.gate-icon { width: 88px; height: 88px; border-radius: 22px; box-shadow: var(--shadow); }
+.gate h1 { font-size: 2rem; }
+.checkin-screen { position: fixed; inset: 0; z-index: 35; background: var(--bg); display: grid; place-items: center; padding: 24px 16px calc(24px + env(safe-area-inset-bottom)); }
+/* No fade-in here: a paused animation (app reopened in the background) would leave it invisible. */
+.checkin-card { width: 100%; max-width: 420px; display: grid; justify-items: center; gap: 12px; text-align: center; }
+.checkin-card h1 { font-size: 1.8rem; margin-top: 6px; }
+.checkin-card p { margin: 0; }
+.big-btn { min-height: 56px; font-size: 1.1rem; }
+
 @keyframes drop { to { transform: translateY(110vh) rotate(540deg); } }
 @keyframes rise { from { transform: translateY(40px); opacity: 0; } }
 @keyframes fade { from { opacity: 0; } }

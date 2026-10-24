@@ -380,3 +380,23 @@ Accepted all three: no collection-group queries (delete-my-data uses known paths
 - 7 accepted: deleting your own review from the sheet bumps the outbox.
 - 8 accepted: plan updated to 12.19.0 (latest 12.x older than two weeks; same version as the rules-test dependency).
 Same-model review-skill pass also fixed: Firebase failure blocking Drive, stale ownerUid after delete, concurrent SDK init, SDK fetched for never-signed-in users, no escape from wrong-account.
+
+# v1.3 sign-in gate + daily check-in - plan review (1 round)
+
+## Round 1 - Codex
+- The check-in condition is inverted: it requires `rd-notyet == today`, so first-time users are not prompted and users who declined get prompted again. Fix: require `rd-notyet !== localDate()`.
+
+- An upgraded 1.1 diary used offline is locked out of all local data until it can complete Google/Firebase sign-in. Fix: provide an explicitly defined offline migration/access path, or defer mandatory gating until first successful online sign-in.
+
+- If the handle sheet or notebook-busy state suppresses the check-in, the plan never schedules it again after that state clears. Fix: re-evaluate check-in immediately when the handle sheet closes and whenever busy transitions to idle.
+
+- A tab left open and visible across local midnight never receives the new day’s prompt, because checks run only at boot/visibility. Fix: schedule a local-midnight recheck (and validate the date again on relevant app interactions).
+
+- “Today” is defined via `localDate()` for dismissal but not explicitly for persisted reading dates, risking near-midnight timezone mismatches. Fix: use one shared local-calendar-day key for both read-date storage/comparison and `rd-notyet`.
+
+- “Firebase configured” weakens the stated sign-in-first requirement: a production build with missing/broken config exposes the app without authentication. Fix: fail closed in production when required auth configuration is unavailable.
+
+VERDICT: REVISE
+### Claude's response
+Accepted: offline access for a device that already holds diary data (gate shows "sign in when you're online" and lets you in); check-in re-evaluated after the handle sheet closes and when the notebook goes idle; a local-midnight timer re-runs the check.
+Rejected: "condition inverted" (misread - the plan says Not yet was NOT chosen today); separate day key (localDate() is already the single day function used for sessions and rd-notyet); fail-closed on missing config (the config is a constant compiled into the app, not something that can go missing at runtime).

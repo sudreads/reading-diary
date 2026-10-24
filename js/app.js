@@ -10,7 +10,7 @@ import { isConfigured as fbConfigured } from './firebase.js';
 import { workIdOf } from './social.js';
 import { reviewsSheet, handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
 const TABS = [
   { id: 'now', label: 'Now', icon: '📖' },
   { id: 'journal', label: 'Notebook', icon: '📓' },
@@ -18,7 +18,7 @@ const TABS = [
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ];
 
-const ui = { tab: 'now', bookId: null, section: 'notebook', page: {} };
+const ui = { tab: 'now', bookId: null, section: 'notebook', page: {}, gated: false };
 let data = { books: [], blocks: [], sessions: [] };
 
 const main = () => document.getElementById('main');
@@ -50,8 +50,79 @@ async function render() {
   busy.current = () => false;
   resetNotebook();
   const el = clear(main());
+  document.body.classList.toggle('gated', ui.gated);
+  if (ui.gated) { el.append(gateScreen()); return; }
   el.append(SCREENS[ui.tab]());
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
+  maybeCheckin();
+}
+
+// ---------- Sign-in gate ----------
+
+// Only the local ownerUid decides, never the network: a phone that signed in once always opens.
+async function needsGate() {
+  if (!fbConfigured() || (await store.getMeta('ownerUid', ''))) return false;
+  // A diary that already has books (from before accounts existed) isn't locked away offline.
+  if (!navigator.onLine && (await store.list('books')).length) { toast('Sign in when you\'re online'); return false; }
+  return true;
+}
+
+function gateScreen() {
+  const msg = h('p', { class: 'muted small' });
+  const s = syncer.state;
+  if (s.drive === 'disconnected' && /access_denied|not_authorized|unauthorized/i.test(s.error)) msg.textContent = 'That Google account isn\'t invited to the beta yet. Ask the person who sent you the app to add it.';
+  else if (s.drive === 'disconnected' && s.error) msg.textContent = `Sign-in didn't finish (${s.error}). Try again.`;
+  else if (s.drive === 'wrong-account' || s.account === 'wrong-account') msg.textContent = 'That account doesn\'t match this diary. Pick the right one.';
+  const btn = h('button', { class: 'btn primary wide', onclick: async () => {
+    if (!navigator.onLine) { msg.textContent = 'You\'re offline - connect to the internet to sign in.'; return; }
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
+    await syncer.syncNow({ interactive: true });
+    if (await store.getMeta('ownerUid', '')) { ui.gated = false; renderPill(); }
+    render();
+  } }, 'Sign in with Google');
+  return h('div', { class: 'gate' },
+    h('img', { src: 'icons/icon-192.png', alt: '', class: 'gate-icon' }),
+    h('h1', null, 'Reading Diary'),
+    h('p', null, 'Keep a notebook for every book, keep your reading streak, and see what other readers think.'),
+    btn, msg,
+    h('p', { class: 'muted small' }, 'Your notebook stays private. Only reviews you choose to post are public. ',
+      h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener' }, 'Privacy')));
+}
+
+// ---------- Daily check-in ----------
+
+let checkinOpen = false;
+
+// First thing after opening on a day he hasn't read yet. Never over the gate, another sheet, or
+// the notebook while he's writing; re-checked on every render, click and at midnight.
+function maybeCheckin() {
+  if (checkinOpen || ui.gated || busy.current() || document.getElementById('sheets').children.length) return;
+  const book = currentBook();
+  const today = localDate();
+  if (!book || readingDates(data.sessions).has(today) || notYetToday()) return;
+  checkinOpen = true;
+  const close = () => { checkinOpen = false; wrap.remove(); render(); };
+  const st = streak(data.sessions, today);
+  const wrap = h('div', { class: 'checkin-screen', role: 'dialog', 'aria-label': 'Did you read today?' },
+    h('div', { class: 'checkin-card' },
+      h('div', { class: 'flame-big', 'aria-hidden': 'true' }, st ? '🔥' : '🌱'),
+      h('div', { class: 'muted' }, st ? `${st} day streak` : 'Start a streak today'),
+      cover(book),
+      h('h1', null, 'Did you read today?'),
+      h('p', { class: 'muted' }, book.title),
+      h('button', { class: 'btn primary wide big-btn', onclick: async (e) => { await readTodayClick(e, book); close(); } }, 'I read today'),
+      h('button', { class: 'btn wide big-btn', onclick: () => {
+        try { localStorage.setItem('rd-notyet', localDate()); } catch { /* ignore */ }
+        close();
+      } }, 'Not yet')));
+  document.body.append(wrap);
+}
+
+function scheduleMidnight() {
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+  setTimeout(() => { render(); scheduleMidnight(); }, next - now);
 }
 
 async function go(tab, bookId) {
@@ -603,7 +674,7 @@ async function boot() {
   });
   // Something he writes or draws is finished once focus leaves it or "Done" is tapped.
   document.addEventListener('focusout', () => setTimeout(maybeRender, 0));
-  document.addEventListener('click', () => setTimeout(maybeRender, 0));
+  document.addEventListener('click', () => setTimeout(() => { maybeRender(); maybeCheckin(); }, 0));
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'hidden') await flushNotebook(); // keep a half-finished drawing
     else if (!busy.current()) render(); // a new day: "Not yet" resets, streak updates
@@ -615,8 +686,10 @@ async function boot() {
     // First sign-in: ask for the reader name once per app open.
     if (s.account === 'needs-handle' && !askedHandle) { askedHandle = true; handleSheet(() => render()); }
   });
+  ui.gated = await needsGate();
   syncer.start();
   setupServiceWorker();
+  scheduleMidnight();
   await render();
   renderPill();
 }
