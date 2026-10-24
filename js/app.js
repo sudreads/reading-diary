@@ -8,9 +8,10 @@ import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLe
 import { isConfigured } from './drive.js';
 import { isConfigured as fbConfigured } from './firebase.js';
 import { workIdOf } from './social.js';
+import { dedupePlan } from './dedupe.js';
 import { reviewsSheet, handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 const TABS = [
   { id: 'now', label: 'Now', icon: '📖' },
   { id: 'journal', label: 'Notebook', icon: '📓' },
@@ -688,6 +689,27 @@ function setupServiceWorker() {
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (updating) { updating = false; location.reload(); } });
 }
 
+// Runs once per diary (1.4.1): removes empty copies of a book added twice. See dedupe.js for the
+// rules; the removals sync to Drive as ordinary deletions, so other devices follow.
+async function cleanUpDuplicates() {
+  if (await store.getMeta('dedupe-v1', false)) return;
+  const [books, blocks, sessions] = await Promise.all([store.all('books'), store.all('blocks'), store.all('sessions')]);
+  if (!books.length) return; // nothing here yet (fresh phone before its first sync): check next time
+  const plan = dedupePlan(books, blocks);
+  for (const { from, to } of plan.moveSessions) {
+    for (const s of sessions) if (!s.deleted && s.bookId === from) await store.save('sessions', { id: s.id, bookId: to });
+  }
+  for (const { id, status } of plan.setStatus) await store.save('books', { id, status });
+  for (const id of plan.remove) {
+    for (const b of blocks) if (!b.deleted && b.bookId === id) await store.remove('blocks', b.id);
+    // No review-outbox bump: the empty copy had no rating, and both copies share one public
+    // review slot, so "delete the removed copy's review" would wipe the kept copy's review.
+    await store.remove('books', id);
+  }
+  await store.setMeta('dedupe-v1', true);
+  if (plan.remove.length) toast(plan.remove.length === 1 ? 'Removed an empty duplicate book' : `Removed ${plan.remove.length} empty duplicate books`);
+}
+
 async function boot() {
   // GitHub Pages can't send X-Frame-Options, and CSP frame-ancestors doesn't work in a <meta>,
   // so refuse to run inside someone else's frame (clickjacking).
@@ -730,6 +752,7 @@ async function boot() {
     // First sign-in: ask for the reader name once per app open.
     if (s.account === 'needs-handle' && !askedHandle) { askedHandle = true; handleSheet(() => render()); }
   });
+  await cleanUpDuplicates();
   ui.gated = await needsGate();
   syncer.start();
   setupServiceWorker();

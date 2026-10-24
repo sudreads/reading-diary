@@ -1,10 +1,10 @@
 // Offline shell. Bump CACHE on every release; the page asks before switching versions.
-const CACHE = 'rd-v7';
+const CACHE = 'rd-v8';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/caveat-500-latin.woff2',
   'js/app.js', 'js/config.js', 'js/derive.js', 'js/dom.js', 'js/drive.js', 'js/merge.js', 'js/notebook.js',
-  'js/firebase.js', 'js/reviews.js', 'js/social.js', 'js/signout.js',
+  'js/firebase.js', 'js/reviews.js', 'js/social.js', 'js/signout.js', 'js/dedupe.js',
   'js/openlibrary.js', 'js/rank.js', 'js/rev.js', 'js/store.js', 'js/sync.js', 'js/syncer.js', 'js/validate.js',
 ];
 
