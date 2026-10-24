@@ -10,7 +10,7 @@ import { isConfigured as fbConfigured } from './firebase.js';
 import { workIdOf } from './social.js';
 import { reviewsSheet, handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const TABS = [
   { id: 'now', label: 'Now', icon: '📖' },
   { id: 'journal', label: 'Notebook', icon: '📓' },
@@ -73,6 +73,7 @@ function gateScreen() {
   if (s.drive === 'disconnected' && /access_denied|not_authorized|unauthorized/i.test(s.error)) msg.textContent = 'That Google account isn\'t invited to the beta yet. Ask the person who sent you the app to add it.';
   else if (s.drive === 'disconnected' && s.error) msg.textContent = `Sign-in didn't finish (${s.error}). Try again.`;
   else if (s.drive === 'wrong-account' || s.account === 'wrong-account') msg.textContent = 'That account doesn\'t match this diary. Pick the right one.';
+  else if (s.accountError) msg.textContent = `Google sign-in worked, but the reader account didn't (${s.accountError}). Check your internet and try again.`;
   const btn = h('button', { class: 'btn primary wide', onclick: async () => {
     if (!navigator.onLine) { msg.textContent = 'You\'re offline - connect to the internet to sign in.'; return; }
     btn.disabled = true;
@@ -122,7 +123,8 @@ function maybeCheckin() {
 function scheduleMidnight() {
   const now = new Date();
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
-  setTimeout(() => { render(); scheduleMidnight(); }, next - now);
+  // Through the busy guard, so a drawing open at midnight isn't wiped by the redraw.
+  setTimeout(() => { pendingRender = true; maybeRender(); scheduleMidnight(); }, next - now);
 }
 
 async function go(tab, bookId) {

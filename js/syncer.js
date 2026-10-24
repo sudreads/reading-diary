@@ -26,6 +26,7 @@ async function bindAccount(user) {
     return false;
   }
   if (!owner) await store.setMeta('ownerUid', user.uid);
+  state.accountError = '';
   state.uid = user.uid;
   state.handle = (await fb.myHandle(user.uid)) || '';
   state.account = state.handle ? 'ready' : 'needs-handle';
@@ -62,7 +63,8 @@ async function ensureConnected(interactive) {
         }
       } catch (e) {
         if (state.account !== 'ready') state.account = 'signed-out';
-        await store.log('reviews-sign-in', false, e.code || e.message);
+        state.accountError = e.code || e.message; // shown on the sign-in screen
+        await store.log('reviews-sign-in', false, state.accountError);
       }
     }
     state.drive = 'connected';
