@@ -202,3 +202,31 @@ Accepted all three: cross-tab sync lock via navigator.locks, strictly additive r
 - 9 rejected: target is Android Chrome, which has had Web Locks since v69.
 Also fixed before this, from the same-model code-review pass: first-install reload, stale precache, unguarded localStorage, popup-without-gesture red pill, equal-rank move, never-retried rejected records, O(n^2) drawing repaint, leaked object URLs.
 Second inspection round not run: remaining accepted fixes are small and covered by tests.
+
+## v1.1 change plan - Codex round 1 (1 round: UI-heavy, easy to undo)
+- **Undo can destroy real reading history:** “tombstones today’s sessions” would also delete pre-existing page/minute logs for that book. **Fix:** tag check-in sessions (e.g. `kind:'streakCheckin'`) and undo only that session id.
+
+- **Text autosave and drawing save can overwrite each other:** both modify the same `page` block, and record-level LWW can drop either `text` or `drawingId`. **Fix:** serialize page writes and flush/cancel pending text autosave before committing the drawing update.
+
+- **Drawing can be silently lost on interruption:** it is persisted only when Draw mode is exited. **Fix:** save a draft on `visibilitychange/pagehide` (and restore it on return), or persist after each stroke debounce.
+
+- **Canvas overlays will misalign/distort across devices or rotation:** a bitmap made at one viewport size cannot reliably overlay the page at another. **Fix:** store a fixed logical canvas size plus dimensions and render it proportionally with a stable page aspect ratio.
+
+- **“Not yet” state may remain collapsed after midnight:** localStorage is date-keyed conceptually, but the UI needs a date transition while the app stays open. **Fix:** compare its stored date to `localDate()` on render, focus/visibility, and a midnight timer; clear/reopen when different.
+
+- **“I read today” can create duplicate check-ins across tabs or rapid taps.** **Fix:** in the same IndexedDB transaction, query live check-ins for `(bookId, localDate)` and insert only if none exists.
+
+- **Comment ordering is underspecified under equal timestamps / clock skew.** **Fix:** sort comments by `(createdAt, id)` deterministically, or use the existing `(rev.t, rev.d)` as the secondary/primary ordering key.
+
+- **New page deletion needs an explicit active-page transition:** deleting the current page while autosave or drawing is pending can resurrect it or write into a tombstone. **Fix:** flush/cancel page work, tombstone it, then atomically select an adjacent live page before allowing edits.
+
+- **Legacy drawing projection needs a stable synthetic page identity:** otherwise a legacy drawing can be displayed as a page but cannot safely participate in page navigation/deletion. **Fix:** treat its existing block id as the read-only projected page id and disable destructive page actions for it.
+
+- **The plan omits required merge/derive/validation tests for the new semantics.** **Fix:** add tests for check-in undo isolation, duplicate-tab check-ins, midnight rollover, page text/drawing write races, projected legacy blocks, and cross-viewport overlay rendering.
+
+- **Google Fonts weakens offline behavior unnecessarily for a cosmetic font.** **Fix:** ship Caveat as a self-hosted cached asset or use the cursive fallback unless online loading succeeds.
+
+VERDICT: REVISE
+### Claude's response
+Accepted: undo only removes today's read:true check-ins; drawing draft saved on visibilitychange/pagehide; fixed paper aspect with text sized in container units so writing and drawing line up on any width; "Not yet" compared to localDate() on every render and re-render on visibility; duplicate check-in guard; comments sorted by (createdAt, id); flush autosave before delete/draw/page change; tests for check-in streaks; Caveat self-hosted (no CSP change, works offline).
+Rejected: extra page-write serialisation (save() already merges the previous record inside one IndexedDB transaction, so text and drawingId never clobber each other locally); read-only legacy drawing pages (tombstoning a legacy block is the same safe operation as any other).

@@ -140,6 +140,35 @@ test('restore never changes an existing id, live or deleted', () => {
   assert.equal(add.sessions.length, 1);
 });
 
+test('"I read today" check-ins count for the streak; old page logs still count', () => {
+  const today = '2026-10-24';
+  const ss = [
+    { id: 'a', bookId: 'b', date: today, read: true, pages: 0, minutes: 0 },
+    { id: 'b', bookId: 'b', date: addDays(today, -1), pages: 12 },
+    { id: 'c', bookId: 'b', date: addDays(today, -2), read: true },
+  ];
+  assert.equal(streak(ss, today), 3);
+  assert.equal(streak([{ ...ss[0], deleted: true }, ss[1], ss[2]], today), 2); // undo today
+});
+
+test('comment lessons feed the lesson of the day; plain comments do not', () => {
+  const blocks = [{ id: 'x', type: 'comment', text: 'just a thought' }, { id: 'y', type: 'comment', text: 'Pay yourself first', lesson: true }];
+  assert.equal(lessonOfDay(blocks, '2026-10-24').id, 'y');
+});
+
+test('validation accepts 1.1 pages, comments and check-ins', () => {
+  const b = goodBackup();
+  const book = b.books[0].id;
+  b.blocks.push({ id: uuid(), rev: { t: 100, d: 'x' }, bookId: book, type: 'page', text: 'notes', rank: 'k', rankRev: { t: 100, d: 'x' }, createdAt: 5 });
+  b.blocks.push({ id: uuid(), rev: { t: 100, d: 'x' }, bookId: book, type: 'comment', text: 'hi', lesson: true, createdAt: 6 });
+  b.blocks.push({ id: uuid(), rev: { t: 100, d: 'x' }, bookId: book, type: 'comment', text: 'bad', lesson: 'yes' });
+  b.sessions.push({ id: uuid(), rev: { t: 100, d: 'x' }, bookId: book, date: '2026-10-24', read: true, pages: 0, minutes: 0 });
+  const v = validateBackup(b, { maxT: 1000 });
+  assert.equal(v.data.blocks.length, 3);
+  assert.equal(v.data.sessions.length, 2);
+  assert.equal(v.errors.length, 1);
+});
+
 test('restore validation rejects ranks outside the fractional-index alphabet', () => {
   const b = goodBackup();
   b.blocks.push({ ...b.blocks[0], id: uuid(), rank: 'ZZ!' });

@@ -1,0 +1,3 @@
+caveat-500-latin.woff2 - Caveat by Pablo Impallari, (c) The Caveat Project Authors.
+Licensed under the SIL Open Font License 1.1: https://openfontlicense.org
+Self-hosted (rather than loaded from Google Fonts) so the notebook keeps its handwriting offline.

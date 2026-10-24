@@ -27,12 +27,13 @@ const checks = {
     str(r.olKey, 100) && safeCoverUrl(r.coverUrl) && ['reading', 'finished', 'want'].includes(r.status) &&
     num(r.rating, 0, 5) && num(r.totalPages, 0, 100000),
   blocks: (r) => typeof r.bookId === 'string' && UUID.test(r.bookId) &&
-    ['text', 'quote', 'lesson', 'drawing'].includes(r.type) && str(r.text) &&
+    ['page', 'comment', 'text', 'quote', 'lesson', 'drawing'].includes(r.type) && str(r.text) &&
+    (r.lesson === undefined || typeof r.lesson === 'boolean') && num(r.createdAt, 0, 1e14) &&
     (r.rank === undefined || r.rank === '' || (typeof r.rank === 'string' && RANK.test(r.rank))) &&
     (r.drawingId === undefined || r.drawingId === null || UUID.test(r.drawingId)) &&
     (r.rankRev === undefined || isRev(r.rankRev)),
   sessions: (r) => typeof r.bookId === 'string' && UUID.test(r.bookId) && typeof r.date === 'string' &&
-    DATE.test(r.date) && num(r.pages, 0, 10000) && num(r.minutes, 0, 1440) && num(r.toPage, 0, 100000),
+    DATE.test(r.date) && (r.read === undefined || typeof r.read === 'boolean') && num(r.pages, 0, 10000) && num(r.minutes, 0, 1440) && num(r.toPage, 0, 100000),
 };
 
 // maxT: revisions after this are forged or from a broken clock and are rejected, not clamped.

@@ -12,8 +12,9 @@ export function addDays(dateStr, n) {
 
 const live = (list) => list.filter((r) => !r.deleted);
 
+// A day counts if he tapped "I read today" (read: true) or, for 1.0 data, logged pages or minutes.
 export function readingDates(sessions) {
-  return new Set(live(sessions).filter((s) => (s.pages || 0) > 0 || (s.minutes || 0) > 0).map((s) => s.date));
+  return new Set(live(sessions).filter((s) => s.read === true || (s.pages || 0) > 0 || (s.minutes || 0) > 0).map((s) => s.date));
 }
 
 // Consecutive days with reading, ending today - or yesterday, since today is not over yet.
@@ -45,7 +46,7 @@ function hash(str) {
 
 // Same lesson all day, on every device.
 export function lessonOfDay(blocks, date = localDate()) {
-  const lessons = live(blocks).filter((b) => b.type === 'lesson' && (b.text || '').trim())
+  const lessons = live(blocks).filter((b) => (b.type === 'lesson' || (b.type === 'comment' && b.lesson === true)) && (b.text || '').trim())
     .sort((x, y) => (x.id < y.id ? -1 : 1));
   if (!lessons.length) return null;
   return lessons[hash(date) % lessons.length];

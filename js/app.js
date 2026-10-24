@@ -1,43 +1,40 @@
 import * as store from './store.js';
 import * as syncer from './syncer.js';
 import { h, s, clear, toast, sheet, ago } from './dom.js';
-import { rankBetween, compareRanked } from './rank.js';
-import { streak, dayTotals, currentPage, lessonOfDay, localDate } from './derive.js';
+import { streak, readingDates, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
 import { searchBooks } from './openlibrary.js';
-import { openDrawing } from './draw.js';
+import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
 import { isConfigured } from './drive.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const TABS = [
   { id: 'now', label: 'Now', icon: '📖' },
-  { id: 'journal', label: 'Journal', icon: '✏️' },
+  { id: 'journal', label: 'Notebook', icon: '📓' },
   { id: 'trophies', label: 'Trophies', icon: '🏆' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ];
-const BLOCK_TYPES = {
-  text: { label: 'Note', icon: '📝', hint: 'What did you think about this part?' },
-  quote: { label: 'Quote', icon: '💬', hint: 'Copy a line from the book' },
-  lesson: { label: 'Lesson', icon: '💡', hint: 'One sentence you want to remember' },
-  drawing: { label: 'Drawing', icon: '🎨' },
-};
 
-const ui = { tab: 'now', bookId: null };
+const ui = { tab: 'now', bookId: null, section: 'notebook', page: {} };
 let data = { books: [], blocks: [], sessions: [] };
-const blobUrls = new Map();
 
 const main = () => document.getElementById('main');
 const byNewest = (a, b) => (b.rev?.t || 0) - (a.rev?.t || 0);
 const bookTitle = (id) => data.books.find((b) => b.id === id)?.title || '';
+const currentBook = () => data.books.filter((b) => b.status === 'reading').sort(byNewest)[0] || null;
 
-// Whole number in [0, max]; anything else (blank, "1e309", negative) becomes 0 or max.
-function whole(v, max) {
-  const n = Math.floor(Number(v));
-  return Number.isFinite(n) ? Math.min(max, Math.max(0, n)) : 0;
+// Notebook typing and drawing write through quiet(), so they don't redraw the page under his
+// finger; sync merges that land while he is writing wait until he stops.
+let quietDepth = 0, pendingRender = false;
+const busy = { current: () => false };
+async function quiet(fn) {
+  quietDepth++;
+  try { return await fn(); } finally { quietDepth--; }
 }
-
-function getGoal() {
-  try { return Math.max(1, Number(localStorage.getItem('rd-goal')) || 10); } catch { return 10; }
+function maybeRender() {
+  if (!pendingRender || busy.current()) return;
+  pendingRender = false;
+  render();
 }
 
 async function load() {
@@ -47,19 +44,20 @@ async function load() {
 
 async function render() {
   await load();
-  blobUrls.forEach((u) => URL.revokeObjectURL(u));
-  blobUrls.clear();
+  busy.current = () => false;
+  resetNotebook();
   const el = clear(main());
   el.append(SCREENS[ui.tab]());
   document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
-  window.scrollTo(0, 0);
 }
 
-function go(tab, bookId) {
+async function go(tab, bookId) {
+  await flushNotebook();
   ui.tab = tab;
   if (bookId) ui.bookId = bookId;
   try { localStorage.setItem('rd-tab', tab); } catch { /* storage may be blocked */ }
-  render();
+  await render();
+  window.scrollTo(0, 0);
 }
 
 function cover(book, cls = 'cover') {
@@ -79,78 +77,103 @@ function stars(n, onPick) {
 
 // ---------- Now ----------
 
+function notYetToday() {
+  try { return localStorage.getItem('rd-notyet') === localDate(); } catch { return false; }
+}
+
 function nowScreen() {
-  const reading = data.books.filter((b) => b.status === 'reading').sort(byNewest);
   const today = localDate();
-  const goal = getGoal();
-  const t = dayTotals(data.sessions, today);
   const st = streak(data.sessions, today);
+  const dates = readingDates(data.sessions);
+  const readToday = dates.has(today);
+  const book = currentBook();
   const lesson = lessonOfDay(data.blocks, today);
 
   if (!data.books.length) {
     return h('div', { class: 'stack' },
       h('div', { class: 'card hero' },
         h('h1', null, 'Your reading diary'),
-        h('p', null, 'Keep what you learn from every book, keep your streak going, and build a trophy road of everything you have read.'),
-        h('button', { class: 'btn primary', onclick: seed }, 'Add Make Your Bed + Rich Dad Poor Dad'),
-        h('button', { class: 'btn ghost', onclick: addBookSheet }, 'Add a different book')));
+        h('p', null, 'One book at a time. Keep a notebook for it, keep your streak going, and build a trophy road of everything you finish.'),
+        h('button', { class: 'btn primary', onclick: addBookSheet }, 'Add your first book')));
   }
 
-  const book = reading[0];
+  const week = Array.from({ length: 7 }, (_, i) => addDays(today, i - 6));
+  const streakCard = h('div', { class: 'card streak-card' },
+    h('div', { class: 'flame-big', 'aria-hidden': 'true' }, st ? '🔥' : '🌱'),
+    h('div', { class: 'big' }, st === 1 ? '1 day streak' : `${st} day streak`),
+    h('div', { class: 'week', 'aria-label': 'Last 7 days' }, week.map((d) => h('div', { class: `day${dates.has(d) ? ' on' : ''}${d === today ? ' today' : ''}` },
+      h('span', { class: 'dot' }), h('span', { class: 'muted tiny' }, new Date(`${d}T12:00`).toLocaleDateString(undefined, { weekday: 'narrow' }))))));
+
   return h('div', { class: 'stack' },
-    h('div', { class: 'card streak' },
-      h('div', { class: 'flame', 'aria-hidden': 'true' }, st ? '🔥' : '🌱'),
-      h('div', null,
-        h('div', { class: 'big' }, st === 1 ? '1 day' : `${st} days`),
-        h('div', { class: 'muted' }, t.pages >= goal ? `Goal done today - ${t.pages} pages` : `${t.pages} / ${goal} pages today`)),
-      h('div', { class: 'ring', style: `--p:${Math.min(1, t.pages / goal)}` })),
-    book ? currentBookCard(book) : h('div', { class: 'card' },
-      h('p', null, 'Not reading anything right now.'),
-      h('button', { class: 'btn primary', onclick: addBookSheet }, 'Start a book')),
+    streakCard,
+    book ? currentBookCard(book, readToday) : nextBookCard(),
+    book && h('button', { class: 'btn ghost wide', onclick: addBookSheet }, '+ Save a book for later'),
     lesson && h('div', { class: 'card lesson-day' },
       h('div', { class: 'eyebrow' }, '💡 Lesson of the day'),
       h('p', { class: 'lesson-text' }, lesson.text),
-      h('div', { class: 'muted' }, `from ${bookTitle(lesson.bookId)}`)),
-    reading.length > 1 && h('div', { class: 'card' },
-      h('div', { class: 'eyebrow' }, 'Also reading'),
-      reading.slice(1).map((b) => h('button', { class: 'row-btn', onclick: () => go('journal', b.id) }, cover(b, 'cover-xs'), h('span', null, b.title)))),
-    h('button', { class: 'btn ghost wide', onclick: addBookSheet }, '+ Add a book'));
+      h('div', { class: 'muted' }, `from ${bookTitle(lesson.bookId)}`)));
 }
 
-function currentBookCard(book) {
-  const page = currentPage(book.id, data.sessions);
-  const pct = book.totalPages ? Math.min(100, Math.round((page / book.totalPages) * 100)) : null;
+function currentBookCard(book, readToday) {
+  let question;
+  if (readToday) {
+    const today = localDate();
+    const undoable = data.sessions.some((s) => s.bookId === book.id && s.date === today && s.read === true);
+    question = h('div', { class: 'checkin done' },
+      h('p', null, '✓ You read today. See you tomorrow!'),
+      undoable && h('button', { class: 'link-btn', onclick: () => undoToday(book) }, 'Undo'));
+  } else if (notYetToday()) {
+    question = h('div', { class: 'checkin' },
+      h('p', { class: 'muted' }, 'No problem - tap when you\'ve read.'),
+      h('button', { class: 'btn primary wide', onclick: (e) => readTodayClick(e, book) }, 'I read today'));
+  } else {
+    question = h('div', { class: 'checkin' },
+      h('p', { class: 'question' }, 'Did you read today?'),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn primary', onclick: (e) => readTodayClick(e, book) }, 'I read today'),
+        h('button', { class: 'btn', onclick: () => { try { localStorage.setItem('rd-notyet', localDate()); } catch { /* ignore */ } render(); } }, 'Not yet')));
+  }
   return h('div', { class: 'card current' },
     h('div', { class: 'current-top' },
       cover(book),
       h('div', null,
         h('div', { class: 'eyebrow' }, 'Reading now'),
         h('h2', null, book.title),
-        book.author && h('div', { class: 'muted' }, book.author),
-        h('div', { class: 'muted small' }, book.totalPages ? `Page ${page} of ${book.totalPages}` : `Page ${page}`))),
-    pct !== null && h('div', { class: 'bar' }, h('span', { style: `width:${pct}%` })),
+        book.author && h('div', { class: 'muted' }, book.author))),
+    question,
     h('div', { class: 'actions' },
-      h('button', { class: 'btn primary', onclick: () => logSheet(book) }, 'I read today'),
-      h('button', { class: 'btn', onclick: () => go('journal', book.id) }, 'Journal'),
+      h('button', { class: 'btn', onclick: () => { ui.section = 'notebook'; go('journal', book.id); } }, '📓 Notebook'),
       h('button', { class: 'btn', onclick: () => finishSheet(book) }, 'Finished 🏆')));
 }
 
-function logSheet(book) {
-  const page = currentPage(book.id, data.sessions);
-  const toPage = h('input', { type: 'number', inputmode: 'numeric', min: '0', value: String(page || ''), placeholder: 'Page number' });
-  const minutes = h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'Optional' });
-  const close = sheet(`Log reading - ${book.title}`, h('div', { class: 'form' },
-    h('label', null, 'I\'m now on page', toPage),
-    h('label', null, 'Minutes read', minutes),
-    h('button', { class: 'btn primary', onclick: async () => {
-      const to = whole(toPage.value, 100000);
-      const mins = whole(minutes.value, 1440);
-      const pages = Math.max(0, to - page);
-      if (!pages && !mins) return toast('Add a page number or minutes');
-      await store.save('sessions', { bookId: book.id, date: localDate(), pages, minutes: mins, toPage: Math.max(to, page) });
-      close();
-      toast(pages ? `+${pages} pages. Nice.` : `${mins} minutes. Nice.`);
-    } }, 'Save')));
+async function readTodayClick(e, book) {
+  e.currentTarget.disabled = true;
+  const today = localDate();
+  if (readingDates(await store.list('sessions')).has(today)) return render(); // another tab got there first
+  await store.save('sessions', { bookId: book.id, date: today, read: true, pages: 0, minutes: 0 });
+  const st = streak(await store.list('sessions'), today);
+  toast(st > 1 ? `🔥 ${st} days in a row!` : '🔥 Streak started!');
+}
+
+async function undoToday(book) {
+  const today = localDate();
+  for (const s of data.sessions) if (s.bookId === book.id && s.date === today && s.read === true) await store.remove('sessions', s.id);
+}
+
+function nextBookCard() {
+  const want = data.books.filter((b) => b.status === 'want').sort(byNewest);
+  return h('div', { class: 'card' },
+    h('h2', null, 'What are you reading next?'),
+    want.length > 0 && h('div', { class: 'want-list' }, want.map((b) => h('div', { class: 'row' },
+      cover(b, 'cover-xs'), h('span', { class: 'grow' }, b.title),
+      h('button', { class: 'btn small primary', onclick: () => startReading(b) }, 'Start reading')))),
+    h('button', { class: 'btn wide', onclick: addBookSheet }, '+ Add a book'));
+}
+
+async function startReading(book) {
+  if (currentBook()) return toast(`Finish ${currentBook().title} first`);
+  await store.save('books', { id: book.id, status: 'reading', startedAt: localDate() });
+  toast(`Started ${book.title}`);
 }
 
 function finishSheet(book) {
@@ -163,13 +186,13 @@ function finishSheet(book) {
   const close = sheet(`Finished ${book.title}!`, h('div', { class: 'form' },
     h('p', null, 'It goes on your trophy road. How was it?'),
     starBox,
-    h('label', null, 'Your comment', comment),
+    h('label', null, 'Your review', comment),
     h('button', { class: 'btn primary', onclick: async () => {
       if (!rating) return toast('Tap the stars to rate it');
       await store.save('books', { id: book.id, status: 'finished', finishedAt: book.finishedAt || localDate(), rating, comment: comment.value.trim() });
       close();
       celebrate();
-      go('trophies');
+      go('now'); // straight to picking the next book
     } }, 'Add to trophy road')));
 }
 
@@ -184,18 +207,19 @@ function celebrate() {
 // ---------- Add book ----------
 
 function addBookSheet() {
+  const reading = currentBook();
   const q = h('input', { type: 'search', placeholder: 'Search by title or author', autocomplete: 'off' });
   const results = h('div', { class: 'results' });
   const manualTitle = h('input', { placeholder: 'Title', maxlength: '500' });
   const manualAuthor = h('input', { placeholder: 'Author (optional)', maxlength: '500' });
-  const manualPages = h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'Pages (optional)' });
-  const status = h('select', null,
-    h('option', { value: 'reading' }, 'Reading it now'),
-    h('option', { value: 'finished' }, 'Already finished'),
-    h('option', { value: 'want' }, 'Want to read'));
+  const options = reading
+    ? [['want', 'Want to read'], ['finished', 'Already finished']]
+    : [['reading', 'Start reading it now'], ['want', 'Want to read'], ['finished', 'Already finished']];
+  const status = h('select', null, options.map(([v, label]) => h('option', { value: v }, label)));
   let timer;
 
   const add = async (b) => {
+    if (status.value === 'reading' && currentBook()) return toast(`Finish ${currentBook().title} first`);
     const rec = await store.save('books', { ...b, status: status.value, startedAt: localDate(), finishedAt: status.value === 'finished' ? localDate() : null, rating: 0, comment: '' });
     close();
     if (status.value === 'finished') finishSheet(rec);
@@ -219,136 +243,47 @@ function addBookSheet() {
   });
 
   const close = sheet('Add a book', h('div', { class: 'form' },
+    reading && h('p', { class: 'note' }, `You're reading ${reading.title}. Finish it first to start another - you can still save books for later.`),
     h('label', null, 'Status', status),
     q, results,
     h('details', { class: 'manual' },
       h('summary', null, 'Add by hand'),
-      manualTitle, manualAuthor, manualPages,
+      manualTitle, manualAuthor,
       h('button', { class: 'btn primary', onclick: () => {
         const title = manualTitle.value.trim();
         if (!title) return toast('Give it a title');
-        add({ title, author: manualAuthor.value.trim(), totalPages: whole(manualPages.value, 100000), coverUrl: '', olKey: '' });
+        add({ title, author: manualAuthor.value.trim(), totalPages: 0, coverUrl: '', olKey: '' });
       } }, 'Add book'))));
 }
 
-async function seed() {
-  const mine = [
-    { title: 'Make Your Bed', author: 'William H. McRaven', status: 'finished', totalPages: 144, q: 'make your bed mcraven' },
-    { title: 'Rich Dad Poor Dad', author: 'Robert T. Kiyosaki', status: 'reading', totalPages: 336, q: 'rich dad poor dad kiyosaki' },
-  ];
-  for (const b of mine) {
-    const { q, ...rec } = b;
-    const saved = await store.save('books', { ...rec, coverUrl: '', olKey: '', startedAt: localDate(), finishedAt: rec.status === 'finished' ? localDate() : null, rating: 0, comment: '' });
-    searchBooks(q, { replace: false }).then((r) => r[0]?.coverUrl && store.save('books', { id: saved.id, coverUrl: r[0].coverUrl, olKey: r[0].olKey })).catch(() => {});
-  }
-  const first = (await store.list('books')).find((b) => b.status === 'finished');
-  if (first) finishSheet(first);
-}
-
-// ---------- Journal ----------
+// ---------- Notebook + comments ----------
 
 function journalScreen() {
-  const books = [...data.books].sort(byNewest);
-  if (!books.length) return h('div', { class: 'card' }, h('p', null, 'Add a book first.'), h('button', { class: 'btn primary', onclick: addBookSheet }, 'Add a book'));
-  if (!books.some((b) => b.id === ui.bookId)) ui.bookId = (books.find((b) => b.status === 'reading') || books[0]).id;
+  const books = data.books.filter((b) => b.status !== 'want').sort((a, b) => (a.status === 'reading' ? -1 : b.status === 'reading' ? 1 : byNewest(a, b)));
+  if (!books.length) return h('div', { class: 'card' }, h('p', null, 'Start a book to open its notebook.'), h('button', { class: 'btn primary', onclick: addBookSheet }, 'Add a book'));
+  if (!books.some((b) => b.id === ui.bookId)) ui.bookId = books[0].id;
   const book = books.find((b) => b.id === ui.bookId);
-  const blocks = data.blocks.filter((b) => b.bookId === book.id).sort(compareRanked);
+  const pages = pagesOf(data.blocks, book.id);
+  const section = (id, label) => h('button', { class: `seg${ui.section === id ? ' on' : ''}`, onclick: async () => { await flushNotebook(); ui.section = id; render(); } }, label);
 
   return h('div', { class: 'stack' },
-    h('div', { class: 'chips', role: 'tablist' }, books.map((b) =>
+    books.length > 1 && h('div', { class: 'chips', role: 'tablist' }, books.map((b) =>
       h('button', { class: `chip${b.id === book.id ? ' on' : ''}`, role: 'tab', onclick: () => go('journal', b.id) }, b.title))),
-    h('div', { class: 'journal-head' }, cover(book, 'cover-sm'), h('div', null, h('h2', null, book.title), h('div', { class: 'muted' }, blocks.length ? `${blocks.length} entries` : 'Empty - add your first thought'))),
-    blocks.map((b, i) => blockCard(b, blocks, i)),
-    h('div', { class: 'add-bar' }, Object.entries(BLOCK_TYPES).map(([type, t]) =>
-      h('button', { class: 'btn', onclick: () => addBlock(book, type, blocks) }, `${t.icon} ${t.label}`))));
-}
-
-function blockCard(b, blocks, i) {
-  const t = BLOCK_TYPES[b.type] || BLOCK_TYPES.text;
-  let content;
-  if (b.type === 'drawing') {
-    content = h('div', { class: 'drawing-box' }, h('p', { class: 'muted' }, 'Loading drawing…'));
-    showDrawing(content, b.drawingId);
-  } else {
-    content = h('p', { class: `block-text ${b.type}` }, b.text || '');
-  }
-  return h('article', { class: `block ${b.type}` },
-    h('div', { class: 'block-label' }, `${t.icon} ${t.label}`),
-    content,
-    h('div', { class: 'block-tools' },
-      h('button', { class: 'icon-btn', 'aria-label': 'Edit', onclick: () => editBlock(b) }, '✏️'),
-      h('button', { class: 'icon-btn', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(blocks, i, -1) }, '↑'),
-      h('button', { class: 'icon-btn', 'aria-label': 'Move down', disabled: i === blocks.length - 1, onclick: () => move(blocks, i, 1) }, '↓'),
-      h('button', { class: 'icon-btn', 'aria-label': 'Delete', onclick: async () => {
-        if (confirm(`Delete this ${t.label.toLowerCase()}?`)) await store.remove('blocks', b.id);
-      } }, '🗑')));
-}
-
-async function showDrawing(box, drawingId) {
-  let blob = null;
-  try { blob = await syncer.drawingBlob(drawingId); } catch { /* shown as missing below */ }
-  if (!blob) {
-    box.replaceChildren(h('p', { class: 'muted' }, 'Drawing not downloaded yet. '),
-      h('button', { class: 'btn small', onclick: () => syncer.syncNow({ interactive: true }).then(render) }, 'Retry'));
-    return;
-  }
-  if (!blobUrls.has(drawingId)) blobUrls.set(drawingId, URL.createObjectURL(blob));
-  box.replaceChildren(h('img', { class: 'drawing', src: blobUrls.get(drawingId), alt: 'Drawing' }));
-}
-
-async function move(blocks, i, dir) {
-  const order = blocks.filter((_, k) => k !== i);
-  order.splice(i + dir, 0, blocks[i]);
-  const at = i + dir;
-  const lo = order[at - 1]?.rank || '';
-  const hi = order[at + 1]?.rank ?? null;
-  if (hi === null || lo < hi) return store.setRank(blocks[i].id, rankBetween(lo, hi));
-  // Two devices gave blocks the same rank: re-rank this book in the order he now sees.
-  let prev = '';
-  for (const b of order) { prev = rankBetween(prev, null); await store.setRank(b.id, prev); }
-}
-
-async function addBlock(book, type, blocks) {
-  const rank = rankBetween(blocks.at(-1)?.rank || '', null);
-  if (type === 'drawing') {
-    const blob = await openDrawing();
-    if (!blob) return;
-    const drawingId = await store.putDrawing(blob);
-    await store.save('blocks', { bookId: book.id, type, drawingId, text: '', rank, createdAt: Date.now() });
-    return;
-  }
-  textSheet(BLOCK_TYPES[type], '', (text) => store.save('blocks', { bookId: book.id, type, text, rank, createdAt: Date.now() }));
-}
-
-async function editBlock(b) {
-  if (b.type === 'drawing') {
-    const base = await syncer.drawingBlob(b.drawingId).catch(() => null);
-    const blob = await openDrawing(base);
-    if (!blob) return;
-    const drawingId = await store.putDrawing(blob); // drawings are immutable: a redraw is a new one
-    await store.save('blocks', { id: b.id, drawingId });
-    return;
-  }
-  textSheet(BLOCK_TYPES[b.type], b.text, (text) => store.save('blocks', { id: b.id, text }));
-}
-
-function textSheet(t, initial, onSave) {
-  const ta = h('textarea', { rows: '6', maxlength: '20000', placeholder: t.hint });
-  ta.value = initial || '';
-  const close = sheet(`${t.icon} ${t.label}`, h('div', { class: 'form' }, ta,
-    h('button', { class: 'btn primary', onclick: async () => {
-      const text = ta.value.trim();
-      if (!text) return toast('Write something first');
-      await onSave(text);
-      close();
-    } }, 'Save')));
+    h('div', { class: 'journal-head' }, cover(book, 'cover-sm'), h('div', null, h('h2', null, book.title), book.author && h('div', { class: 'muted' }, book.author))),
+    h('div', { class: 'segmented' }, section('notebook', '📓 Notebook'), section('comments', '💬 Comments')),
+    ui.section === 'comments'
+      ? commentsView({ book, blocks: data.blocks })
+      : notebookView({
+        book, pages, pageIndex: ui.page[book.id] ?? Math.max(0, pages.length - 1),
+        setPage: (i) => { ui.page[book.id] = i; render(); }, quiet, isBusy: busy,
+      }));
 }
 
 // ---------- Trophy road ----------
 
 function trophyScreen() {
   const done = data.books.filter((b) => b.status === 'finished').sort((a, b) => (b.finishedAt || '').localeCompare(a.finishedAt || '') || byNewest(a, b));
-  const next = data.books.filter((b) => b.status === 'reading').sort(byNewest)[0];
+  const next = currentBook();
   const rated = done.filter((b) => b.rating);
   const avg = rated.length ? (rated.reduce((n, b) => n + b.rating, 0) / rated.length).toFixed(1) : '-';
 
@@ -367,7 +302,7 @@ function trophyScreen() {
     h('div', { class: 'card trophy-stats' },
       h('div', null, h('div', { class: 'big' }, String(done.length)), h('div', { class: 'muted' }, done.length === 1 ? 'book read' : 'books read')),
       h('div', null, h('div', { class: 'big' }, `${avg}★`), h('div', { class: 'muted' }, 'average rating')),
-      h('div', null, h('div', { class: 'big' }, String(data.blocks.filter((b) => b.type === 'lesson').length)), h('div', { class: 'muted' }, 'lessons kept'))),
+      h('div', null, h('div', { class: 'big' }, String(data.blocks.filter(isLessonBlock).length)), h('div', { class: 'muted' }, 'lessons kept'))),
     nodes.length ? h('div', { class: 'road', style: `height:${height}px` },
       s('svg', { class: 'road-path', viewBox: `0 0 100 ${height}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' },
         s('path', { d, fill: 'none', 'vector-effect': 'non-scaling-stroke' })),
@@ -377,15 +312,15 @@ function trophyScreen() {
       },
       cover(book, 'cover-sm'),
       h('span', { class: 'node-title' }, book.title),
-      ghost ? h('span', { class: 'node-sub' }, 'Next up…') : stars(book.rating)))) :
+      ghost ? h('span', { class: 'node-sub' }, 'Reading now…') : stars(book.rating)))) :
       h('div', { class: 'card' }, h('p', null, 'Finish a book to place your first trophy.')));
 }
 
 function trophySheet(book) {
-  const lessons = data.blocks.filter((b) => b.bookId === book.id && b.type === 'lesson').sort(compareRanked);
+  const lessons = data.blocks.filter((b) => b.bookId === book.id && isLessonBlock(b)).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   let rating = book.rating || 0;
   const starBox = h('div');
-  const comment = h('textarea', { rows: '4', maxlength: '20000', placeholder: 'Your comment' });
+  const comment = h('textarea', { rows: '4', maxlength: '20000', placeholder: 'Your review' });
   comment.value = book.comment || '';
   const drawStars = () => starBox.replaceChildren(stars(rating, (n) => { rating = n; drawStars(); }));
   drawStars();
@@ -394,7 +329,7 @@ function trophySheet(book) {
       book.author && h('div', null, book.author),
       h('div', { class: 'muted small' }, `Finished ${book.finishedAt || ''}`))),
     starBox,
-    h('label', null, 'Comment', comment),
+    h('label', null, 'Review', comment),
     lessons.length > 0 && h('div', null, h('div', { class: 'eyebrow' }, '💡 Lessons'), lessons.map((l) => h('p', { class: 'lesson-text small' }, l.text))),
     h('div', { class: 'actions' },
       h('button', { class: 'btn primary', onclick: async () => {
@@ -402,9 +337,9 @@ function trophySheet(book) {
         close();
         toast('Saved');
       } }, 'Save'),
-      h('button', { class: 'btn', onclick: () => { close(); go('journal', book.id); } }, 'Open journal'),
+      h('button', { class: 'btn', onclick: () => { close(); ui.section = 'notebook'; go('journal', book.id); } }, 'Open notebook'),
       h('button', { class: 'btn ghost', onclick: async () => {
-        if (!confirm(`Remove ${book.title} and its journal?`)) return;
+        if (!confirm(`Remove ${book.title}, its notebook and comments?`)) return;
         for (const b of data.blocks.filter((x) => x.bookId === book.id)) await store.remove('blocks', b.id);
         await store.remove('books', book.id);
         close();
@@ -420,8 +355,6 @@ function settingsScreen() {
     const persisted = (await navigator.storage?.persisted?.()) ?? false;
     const logEntries = await store.getMeta('syncLog', []);
     const ds = syncer.state;
-    const goal = h('input', { type: 'number', inputmode: 'numeric', min: '1', value: String(getGoal()) });
-    goal.addEventListener('change', () => { try { localStorage.setItem('rd-goal', String(whole(goal.value, 1000) || 10)); } catch { /* ignore */ } toast('Goal saved'); });
     const fileIn = h('input', { type: 'file', accept: 'application/json,.json', class: 'hidden-input', onchange: (e) => restoreFrom(e.target.files[0]) });
 
     box.append(
@@ -447,9 +380,6 @@ function settingsScreen() {
         h('h2', null, 'Get book ideas'),
         h('p', { class: 'muted small' }, 'Copies your ratings, comments and lessons as text. Paste it to Claude and ask what to read next.'),
         h('button', { class: 'btn', onclick: exportForClaude }, 'Export for Claude')),
-      h('div', { class: 'card' },
-        h('h2', null, 'Daily goal'),
-        h('label', { class: 'inline' }, 'Pages per day', goal)),
       h('div', { class: 'card' },
         h('h2', null, 'Reminders (like Duolingo)'),
         h('details', null, h('summary', null, 'Remind me when I get home'),
@@ -515,7 +445,9 @@ async function exportForClaude() {
     lines.push(`## ${b.title}${b.author ? ` - ${b.author}` : ''}`);
     lines.push(`Status: ${b.status}${b.rating ? ` · My rating: ${b.rating}/5` : ''}`);
     if (b.comment) lines.push(`My comment: ${b.comment}`);
-    for (const l of data.blocks.filter((x) => x.bookId === b.id && x.type === 'lesson').sort(compareRanked)) lines.push(`- Lesson: ${l.text}`);
+    const notes = data.blocks.filter((x) => x.bookId === b.id && ['comment', 'text', 'quote', 'lesson'].includes(x.type))
+      .sort((x, y) => (x.createdAt || 0) - (y.createdAt || 0));
+    for (const n of notes) lines.push(`- ${isLessonBlock(n) ? 'Lesson' : 'Comment'}: ${n.text}`);
     lines.push('');
   }
   lines.push('Based on what I liked and what I learned, what should I read next? Give me 5 options and say why each fits me.');
@@ -592,7 +524,20 @@ async function boot() {
   navigator.storage?.persist?.().catch(() => {});
   try { const t = localStorage.getItem('rd-tab'); if (SCREENS[t]) ui.tab = t; } catch { /* ignore */ }
   setupShell();
-  store.onChange(() => { render(); renderPill(); });
+  store.onChange(() => {
+    renderPill();
+    if (quietDepth > 0) return; // his own notebook typing - the page is already showing it
+    pendingRender = true;
+    maybeRender();
+  });
+  // Something he writes or draws is finished once focus leaves it or "Done" is tapped.
+  document.addEventListener('focusout', () => setTimeout(maybeRender, 0));
+  document.addEventListener('click', () => setTimeout(maybeRender, 0));
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'hidden') await flushNotebook(); // keep a half-finished drawing
+    else if (!busy.current()) render(); // a new day: "Not yet" resets, streak updates
+  });
+  window.addEventListener('pagehide', () => { flushNotebook(); });
   syncer.onStatus(() => renderPill());
   syncer.start();
   setupServiceWorker();
