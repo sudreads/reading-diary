@@ -10,7 +10,7 @@ import { isConfigured as fbConfigured } from './firebase.js';
 import { workIdOf } from './social.js';
 import { reviewsSheet, handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const TABS = [
   { id: 'now', label: 'Now', icon: '📖' },
   { id: 'journal', label: 'Notebook', icon: '📓' },
@@ -394,7 +394,8 @@ function settingsScreen() {
     const ds = syncer.state;
     const fileIn = h('input', { type: 'file', accept: 'application/json,.json', class: 'hidden-input', onchange: (e) => restoreFrom(e.target.files[0]) });
 
-    box.append(
+    // Native append() would print a skipped card (false) as the word "false", so filter first.
+    box.append(...[
       fbConfigured() && accountCard(ds, await store.getMeta('deleteJob', false)),
       fbConfigured() && ds.admin && adminPanel(),
       h('div', { class: 'card' },
@@ -437,7 +438,7 @@ function settingsScreen() {
         h('details', null, h('summary', null, 'Sync log'),
           logEntries.length ? h('ul', { class: 'log' }, logEntries.map((e) => h('li', null, `${new Date(e.time).toLocaleString()} · ${e.op} · ${e.ok ? 'ok' : 'failed'}${e.code ? ` · ${e.code}` : ''}`))) : h('p', { class: 'muted small' }, 'Nothing yet.'),
           h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(JSON.stringify(logEntries, null, 1)).then(() => toast('Copied')) }, 'Copy log'))),
-      h('p', { class: 'muted small center' }, `Reading Diary ${VERSION}`));
+      h('p', { class: 'muted small center' }, `Reading Diary ${VERSION}`)].filter(Boolean));
   })();
   return box;
 }

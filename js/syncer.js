@@ -41,7 +41,13 @@ async function ensureConnected(interactive) {
     const chooseAccount = state.drive === 'wrong-account' || state.account === 'wrong-account';
     await drive.connect({ interactive, chooseAccount });
     state.email = await drive.whoAmI();
-    const confirmed = await store.getMeta('confirmedEmail', '');
+    let confirmed = await store.getMeta('confirmedEmail', '');
+    // First sign-in on this device: he just picked this account in Google's own chooser, so
+    // asking "use this account?" again only looked like a second sign-up. Later mismatches still ask.
+    if (!confirmed && interactive && !(await store.getMeta('ownerUid', ''))) {
+      confirmed = state.email;
+      await store.setMeta('confirmedEmail', confirmed);
+    }
     if (state.email !== confirmed && (!EXPECTED_EMAIL || state.email !== EXPECTED_EMAIL)) { state.drive = 'needs-confirm'; return false; }
     if (fb.isConfigured()) {
       // A broken public layer must never stop the private Drive backup; only a wrong account does.
