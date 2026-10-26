@@ -1,5 +1,7 @@
 // Pure rules for the public layer (no Firebase imports), so they run under `node --test`.
 
+import { bookKeyOf } from './catalog.js';
+
 export const HANDLE_RE = /^[a-z0-9_]{3,20}$/;
 export const MAX_REVIEW = 2000;
 export const REPORT_REASONS = { spam: 'Spam', mean: 'Mean or hateful', spoiler: 'Big spoiler', other: 'Something else' };
@@ -22,14 +24,16 @@ export function workIdOf(olKey) {
 }
 
 // What the remote review should be for this book right now. Only an explicit publicReview: true
-// publishes, so books finished before 1.2 never go public by surprise.
+// publishes, so books finished before 1.2 never go public by surprise. 2.0: keyed by the canonical
+// book key (1.x books map from their Open Library work).
 export function desiredReview(book) {
-  const workId = workIdOf(book?.olKey);
-  if (!workId) return { action: 'none' };
+  const key = bookKeyOf(book);
+  if (!key) return { action: 'none' };
   if (book && !book.deleted && book.status === 'finished' && book.publicReview === true && book.rating >= 1) {
-    return { action: 'upsert', workId, rating: Math.min(5, Math.round(book.rating)), text: String(book.comment || '').slice(0, MAX_REVIEW) };
+    return { action: 'upsert', key, rating: Math.min(5, Math.round(book.rating)), text: String(book.comment || '').slice(0, MAX_REVIEW),
+      book: { key, title: book.title || '', author: book.author || '', coverUrl: book.coverUrl || '', pages: book.totalPages || 0, isbn13: book.isbn13 || '' } };
   }
-  return { action: 'delete', workId };
+  return { action: 'delete', key };
 }
 
 // Drain the outbox serially. An entry is cleared only if nobody bumped it while its write was in
@@ -38,8 +42,8 @@ export async function drainOutbox({ entries, getBook, api, ack }) {
   const done = [];
   for (const [bookId, gen] of Object.entries(entries)) {
     const want = desiredReview(await getBook(bookId));
-    if (want.action === 'upsert') await api.upsertReview(want.workId, want.rating, want.text);
-    else if (want.action === 'delete') await api.deleteReview(want.workId);
+    if (want.action === 'upsert') await api.upsertReview(want.book, want.rating, want.text);
+    else if (want.action === 'delete') await api.deleteReview(want.key);
     if (await ack(bookId, gen)) done.push(bookId);
   }
   return done;

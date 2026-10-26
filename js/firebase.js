@@ -130,39 +130,110 @@ export function recordsApi(uid) {
   };
 }
 
-// ----- reviews -----
+// ----- catalog (2.0) -----
 
-const toReview = (snap) => {
+// Registers a book in the shared catalog (existence + display hints). Immutable once there, so
+// "already exists" is success. Needed before anyone can review it.
+export async function ensureCatalog(uid, b) {
+  const { db, fs } = await load();
+  const ref = fs.doc(db, 'catalog', b.key);
+  const have = await fs.getDoc(ref);
+  if (have.exists()) return have.data();
+  const title = String(b.title || '').slice(0, 300) || 'Untitled';
+  try {
+    await fs.setDoc(ref, {
+      key: b.key, title, titleLower: title.toLowerCase(), author: String(b.author || '').slice(0, 300),
+      isbn13: /^97[89]\d{10}$/.test(b.isbn13 || '') ? b.isbn13 : '', pages: Number.isInteger(b.pages) && b.pages >= 0 ? Math.min(b.pages, 100000) : 0,
+      coverUrl: b.coverUrl || '', createdBy: uid, createdAt: fs.serverTimestamp(),
+    });
+  } catch (e) {
+    if (!(await fs.getDoc(ref)).exists()) throw e; // someone else registered it a moment ago: fine
+  }
+  return (await fs.getDoc(ref)).data();
+}
+
+export async function catalogDoc(key) {
+  const { db, fs } = await load();
+  const s = await fs.getDoc(fs.doc(db, 'catalog', key));
+  return s.exists() ? s.data() : null;
+}
+
+// Books readers added themselves, by title prefix.
+export async function searchCommunity(q) {
+  const { db, fs } = await load();
+  const lo = q.trim().toLowerCase();
+  const res = await fs.getDocs(fs.query(fs.collection(db, 'catalog'), fs.where('titleLower', '>=', lo), fs.where('titleLower', '<', `${lo}`), fs.limit(20)));
+  return res.docs.map((s) => s.data()).filter((d) => d.key.startsWith('c:'))
+    .map((d) => ({ key: d.key, source: 'community', title: d.title, author: d.author, year: '', pages: d.pages || 0, isbn13: d.isbn13 || '', coverUrl: d.coverUrl || '', description: '', categories: [], language: '' }));
+}
+
+export async function addCommunityBook(uid, { title, author, pages, isbn13 }) {
+  const key = `c:${crypto.randomUUID()}`;
+  await ensureCatalog(uid, { key, title, author, pages, isbn13, coverUrl: '' });
+  return key;
+}
+
+// ----- reviews (2.0: books/{bookKey}/reviews/{uid}; 1.x works/{OL}/reviews stay readable) -----
+
+const legacyWork = (key) => (key.startsWith('ol:') ? key.slice(3) : null);
+const toReview2 = (snap, legacy) => {
   const d = snap.data();
-  return { id: snap.id, uid: d.uid, handle: d.handle, rating: d.rating, text: d.text, workId: d.workId,
+  return { id: snap.id, uid: d.uid, handle: d.handle, rating: d.rating, text: d.text, bookKey: d.bookKey || (legacy ? `ol:${d.workId}` : ''),
+    title: d.title || '', author: d.author || '', coverUrl: d.coverUrl || '', legacy,
     createdAt: d.createdAt?.toMillis?.() || 0, updatedAt: d.updatedAt?.toMillis?.() || 0, snap };
 };
 
-export async function listReviews(workId, after = null) {
+// Newest first; the new path wins over a 1.x review by the same person.
+export async function reviewsFor(key, after = null) {
   const { db, fs } = await load();
-  const parts = [fs.collection(db, 'works', workId, 'reviews'), fs.orderBy('createdAt', 'desc')];
-  if (after) parts.push(fs.startAfter(after.snap));
-  parts.push(fs.limit(50));
-  const res = await fs.getDocs(fs.query(...parts));
-  return res.docs.map(toReview);
+  const page = (col) => {
+    const parts = [col, fs.orderBy('createdAt', 'desc')];
+    if (after?.[col.path]) parts.push(fs.startAfter(after[col.path]));
+    parts.push(fs.limit(50));
+    return fs.getDocs(fs.query(...parts));
+  };
+  const main = fs.collection(db, 'books', key, 'reviews');
+  const old = legacyWork(key) ? fs.collection(db, 'works', legacyWork(key), 'reviews') : null;
+  const [a, b] = await Promise.all([page(main), old && !after ? page(old) : null]);
+  const byUid = new Map();
+  for (const s of b?.docs || []) byUid.set(s.data().uid, toReview2(s, true));
+  for (const s of a.docs) byUid.set(s.data().uid, toReview2(s, false));
+  const list = [...byUid.values()].sort((x, y) => y.createdAt - x.createdAt);
+  const cursor = { [main.path]: a.docs.at(-1) || null };
+  return { list, cursor, more: a.docs.length === 50 };
 }
 
-// Create, or edit rating/text only: the rules refuse any other change.
-export async function upsertReview(uid, handle, workId, rating, text) {
+export async function upsertReview2(uid, handle, book, rating, text) {
   const { db, fs } = await load();
-  const ref = fs.doc(db, 'works', workId, 'reviews', uid);
+  const cat = await ensureCatalog(uid, book); // the display fields must match the catalog entry
+  const ref = fs.doc(db, 'books', book.key, 'reviews', uid);
   const existing = await fs.getDoc(ref);
   if (existing.exists()) {
     await fs.updateDoc(ref, { rating, text, updatedAt: fs.serverTimestamp() });
   } else {
-    await fs.setDoc(ref, { workId, uid, handle, rating, text, createdAt: fs.serverTimestamp(), updatedAt: fs.serverTimestamp() });
+    await fs.setDoc(ref, { bookKey: book.key, uid, handle, rating, text, title: cat.title, author: cat.author, coverUrl: cat.coverUrl,
+      createdAt: fs.serverTimestamp(), updatedAt: fs.serverTimestamp() });
   }
 }
 
-export async function deleteReview(workId, uid) {
+// Removes the review at both homes (a 1.x review may still sit under works/).
+export async function deleteReview2(key, uid) {
   const { db, fs } = await load();
-  await fs.deleteDoc(fs.doc(db, 'works', workId, 'reviews', uid));
+  await fs.deleteDoc(fs.doc(db, 'books', key, 'reviews', uid));
+  if (legacyWork(key)) await fs.deleteDoc(fs.doc(db, 'works', legacyWork(key), 'reviews', uid)).catch(() => {});
 }
+
+// Explore: the newest reviews across every book, 30 at a time.
+export async function latestReviews(after = null) {
+  const { db, fs } = await load();
+  const parts = [fs.collectionGroup(db, 'reviews'), fs.orderBy('createdAt', 'desc')];
+  if (after) parts.push(fs.startAfter(after));
+  parts.push(fs.limit(30));
+  const res = await fs.getDocs(fs.query(...parts));
+  return { list: res.docs.map((s) => toReview2(s, !s.data().bookKey)), last: res.docs.at(-1) || null };
+}
+
+// ----- reports + admin -----
 
 export async function report(workId, reviewerUid, uid, reason) {
   const { db, fs } = await load();
@@ -188,7 +259,17 @@ export async function deleteMyPublicData(uid, workIds, accessToken) {
   const { db, fs, fa, auth } = await load();
   if (auth.currentUser?.uid !== uid) throw new Error('not-signed-in-as-owner');
   await fa.reauthenticateWithCredential(auth.currentUser, fa.GoogleAuthProvider.credential(null, accessToken));
-  for (const w of workIds) await fs.deleteDoc(fs.doc(db, 'works', w, 'reviews', uid));
+  // Every review this account wrote, wherever it is (books/ and 1.x works/), in pages of 30 - not
+  // just the books still in this phone's diary. The local keys are a belt-and-braces second pass.
+  for (;;) {
+    const mine = await fs.getDocs(fs.query(fs.collectionGroup(db, 'reviews'), fs.where('uid', '==', uid), fs.limit(30)));
+    if (mine.empty) break;
+    for (const d of mine.docs) await fs.deleteDoc(d.ref);
+  }
+  for (const k of workIds) {
+    await fs.deleteDoc(fs.doc(db, 'books', k, 'reviews', uid));
+    if (k.startsWith('ol:')) await fs.deleteDoc(fs.doc(db, 'works', k.slice(3), 'reviews', uid));
+  }
   const mine = await fs.getDocs(fs.query(fs.collection(db, 'reports'), fs.where('uid', '==', uid)));
   for (const d of mine.docs) await fs.deleteDoc(d.ref);
   await auth.currentUser.delete();

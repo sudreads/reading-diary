@@ -2,10 +2,10 @@
 // is only removed when it is completely empty AND another copy of the same book has something in
 // it. Copies that both hold writing are never touched.
 
-import { workIdOf } from './social.js';
+import { bookKeyOf } from './catalog.js';
 
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
-const keyOf = (b) => workIdOf(b.olKey) || `${norm(b.title)}|${norm(b.author)}`;
+const keyOf = (b) => bookKeyOf(b) || `${norm(b.title)}|${norm(b.author)}`;
 const RANK = { reading: 3, finished: 2, want: 1 };
 
 // A blank page made by "+ New page" isn't writing; a page with text or a drawing is.

@@ -322,6 +322,48 @@ body.gated .tabbar, body.gated #pill { display: none; }
 .steps-live { padding-left: 20px; margin: 0; display: grid; gap: 4px; font-size: 0.92rem; }
 .steps-live .bad { color: var(--red); font-weight: 650; }
 
+/* ---------- 2.0: Explore, book page, shelf ---------- */
+.section-title { font-size: 1rem; margin: 6px 0 10px; }
+.search-input { font-size: 1.05rem; padding: 14px 16px; border-radius: 14px; background: var(--card); box-shadow: var(--shadow); position: sticky; top: 64px; z-index: 3; }
+.results-list { display: grid; gap: 8px; }
+.book-row { display: flex; gap: 12px; align-items: center; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px; box-shadow: var(--shadow); }
+.book-row-text { display: grid; gap: 2px; min-width: 0; }
+.result-line { display: flex; gap: 8px; align-items: center; }
+.result-line .book-row { flex: 1; min-width: 0; }
+.add-fab { flex: none; width: 48px; height: 48px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); font-size: 1.6rem; font-weight: 700; box-shadow: var(--shadow); }
+.book-row-text strong { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.add-missing { display: grid; gap: 8px; justify-items: start; }
+.cover-strip { display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 10px; scrollbar-width: none; scroll-snap-type: x mandatory; }
+.strip-book { flex: none; width: 104px; display: grid; gap: 4px; justify-items: start; text-align: left; border: 0; background: transparent; scroll-snap-align: start; }
+.strip-book .cover { width: 100px; height: 150px; }
+.strip-title { font-weight: 700; font-size: 0.82rem; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.feed-review { display: flex; gap: 12px; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px; }
+.feed-text { display: grid; gap: 3px; min-width: 0; }
+.clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.clamp-6 { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+
+.page-overlay { position: fixed; inset: 0; z-index: 25; background: var(--bg); overflow-y: auto; } /* no fade-in: a paused animation would leave it see-through */
+.page-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: calc(8px + env(safe-area-inset-top)) 12px 8px; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); }
+.page-head .icon-btn { font-size: 1.4rem; }
+.page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-body { max-width: 640px; margin: 0 auto; padding: 4px 16px calc(32px + env(safe-area-inset-bottom)); }
+.book-top { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: start; }
+.book-top > div { min-width: 0; }
+.book-top .chips { flex-wrap: wrap; overflow: visible; }
+.book-title { overflow-wrap: anywhere; }
+.cover-lg { width: 112px; height: 168px; object-fit: cover; border-radius: 8px; box-shadow: 0 4px 14px rgb(0 0 0 / 0.25); background: var(--line); }
+.cover-lg.cover-blank { display: grid; place-items: center; font-size: 2rem; font-weight: 800; color: var(--accent); background: var(--accent-soft); }
+.book-title { font-size: 1.35rem; margin-bottom: 4px; }
+.chips.small .chip { font-size: 0.75rem; padding: 4px 10px; }
+.description { white-space: pre-line; line-height: 1.55; }
+.ratings-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.bars { display: grid; gap: 4px; }
+.bar-row { display: grid; grid-template-columns: 26px 1fr 26px; gap: 8px; align-items: center; }
+.bar-row .bar { margin: 0; height: 6px; }
+.back-link { justify-self: start; padding-left: 0; font-weight: 650; text-decoration: none; color: var(--accent); }
+.actions.tight { margin-top: 8px; gap: 6px; }
+.actions.tight .btn { flex: 0 0 auto; }
+
 @keyframes drop { to { transform: translateY(110vh) rotate(540deg); } }
 @keyframes rise { from { transform: translateY(40px); opacity: 0; } }
 @keyframes fade { from { opacity: 0; } }

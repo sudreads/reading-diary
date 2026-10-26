@@ -3,23 +3,25 @@ import * as syncer from './syncer.js';
 import { h, s, clear, toast, sheet, ago } from './dom.js';
 import { streak, readingDates, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
-import { searchBooks } from './openlibrary.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
 import { isConfigured, hasToken as hasDriveToken } from './drive.js';
-import { isConfigured as fbConfigured } from './firebase.js';
-import { workIdOf } from './social.js';
+import { isConfigured as fbConfigured, ensureCatalog } from './firebase.js';
+import { bookKeyOf } from './catalog.js';
+import { exploreScreen, bookPage, chooseStatusSheet } from './explore.js';
 import { dedupePlan } from './dedupe.js';
-import { reviewsSheet, handleSheet, adminPanel } from './reviews.js';
+import { handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '2.0.0-a';
+const VERSION = '2.0.0';
 const TABS = [
-  { id: 'now', label: 'Now', icon: '📖' },
-  { id: 'journal', label: 'Notebook', icon: '📓' },
-  { id: 'trophies', label: 'Trophies', icon: '🏆' },
-  { id: 'settings', label: 'Settings', icon: '⚙️' },
+  { id: 'home', label: 'Home', icon: '🏠' },
+  { id: 'explore', label: 'Explore', icon: '🔍' },
+  { id: 'books', label: 'My Books', icon: '📚' },
+  { id: 'me', label: 'Me', icon: '👤' },
 ];
+// 1.x tab names, so a remembered tab still opens somewhere sensible after the update.
+const OLD_TABS = { now: 'home', journal: 'books', trophies: 'books', settings: 'me' };
 
-const ui = { tab: 'now', bookId: null, section: 'notebook', page: {}, gated: false };
+const ui = { tab: 'home', bookId: null, bookView: null, booksSection: 'shelf', section: 'notebook', page: {}, gated: false };
 let data = { books: [], blocks: [], sessions: [] };
 
 const main = () => document.getElementById('main');
@@ -132,9 +134,48 @@ async function go(tab, bookId) {
   await flushNotebook();
   ui.tab = tab;
   if (bookId) ui.bookId = bookId;
+  if (tab !== 'books') ui.bookView = null;
   try { localStorage.setItem('rd-tab', tab); } catch { /* storage may be blocked */ }
   await render();
   window.scrollTo(0, 0);
+}
+
+// A book's private diary (notebook + comments) inside My Books.
+async function openMyBook(id, section = 'notebook') {
+  ui.bookView = id;
+  ui.bookId = id;
+  ui.section = section;
+  await go('books', id);
+  ui.bookView = id;
+  render();
+}
+
+// The shared Explore context: how Explore and book pages talk to My Books.
+const exploreCtx = {
+  cover: (b, cls) => cover(b, cls),
+  myBookFor: (key) => (key ? data.books.find((b) => bookKeyOf(b) === key) : null),
+  currentBook: () => currentBook(),
+  openMyBook: (id) => openMyBook(id),
+  onUnpublish: async (key) => {
+    const b = data.books.find((x) => bookKeyOf(x) === key);
+    if (b) { await store.save('books', { id: b.id, publicReview: false }); await store.outboxBump(b.id); }
+  },
+  addToMyBooks: async (b, status) => {
+    if (status === 'reading' && currentBook()) return toast(`Finish ${currentBook().title} first`);
+    const rec = await store.save('books', {
+      bookKey: b.key || '', olKey: b.olKey || '', title: b.title, author: b.author || '', coverUrl: b.coverUrl || '',
+      totalPages: b.pages || 0, isbn13: b.isbn13 || '', status, startedAt: localDate(), finishedAt: status === 'finished' ? localDate() : null, rating: 0, comment: '',
+    });
+    // Register it in the shared catalog so it can be reviewed (best effort; retried on review).
+    if (b.key && syncer.state.checked && syncer.state.uid) ensureCatalog(syncer.state.uid, b).catch(() => {});
+    if (status === 'finished') finishSheet(rec);
+    else toast(status === 'reading' ? `Started ${rec.title}` : `Saved ${rec.title} for later`);
+  },
+};
+
+function openBookPageFor(book) {
+  const key = bookKeyOf(book);
+  if (key) bookPage(key, { title: book.title, author: book.author, coverUrl: book.coverUrl, pages: book.totalPages }, exploreCtx);
 }
 
 function cover(book, cls = 'cover') {
@@ -219,8 +260,8 @@ function currentBookCard(book, readToday) {
         book.author && h('div', { class: 'muted' }, book.author))),
     question,
     h('div', { class: 'actions' },
-      h('button', { class: 'btn', onclick: () => { ui.section = 'notebook'; go('journal', book.id); } }, '📓 Notebook'),
-      fbConfigured() && workIdOf(book.olKey) && h('button', { class: 'btn', onclick: () => openReviews(book) }, '★ Reviews'),
+      h('button', { class: 'btn', onclick: () => openMyBook(book.id) }, '📓 Notebook'),
+      fbConfigured() && bookKeyOf(book) && h('button', { class: 'btn', onclick: () => openBookPageFor(book) }, '★ Reviews'),
       h('button', { class: 'btn', onclick: () => finishSheet(book) }, 'Finished 🏆')));
 }
 
@@ -273,13 +314,13 @@ function finishSheet(book) {
       await store.outboxBump(book.id);
       close();
       celebrate();
-      go('now'); // straight to picking the next book
+      go('home'); // straight to picking the next book
     } }, 'Add to trophy road')));
 }
 
 // "Post publicly" switch. Hidden (and false) when reviews are off or the book can't be matched.
 function publicSwitch(book, initial) {
-  if (!fbConfigured() || !workIdOf(book.olKey)) {
+  if (!fbConfigured() || !bookKeyOf(book)) {
     const why = fbConfigured() ? h('p', { class: 'muted small' }, 'Private only - add the book from search to share reviews.') : null;
     return { el: why, value: () => book.publicReview === true };
   }
@@ -303,71 +344,57 @@ function celebrate() {
 // ---------- Add book ----------
 
 function addBookSheet() {
-  const reading = currentBook();
-  const q = h('input', { type: 'search', placeholder: 'Search by title or author', autocomplete: 'off' });
-  const results = h('div', { class: 'results' });
-  const manualTitle = h('input', { placeholder: 'Title', maxlength: '500' });
-  const manualAuthor = h('input', { placeholder: 'Author (optional)', maxlength: '500' });
-  const options = reading
-    ? [['want', 'Want to read'], ['finished', 'Already finished']]
-    : [['reading', 'Start reading it now'], ['want', 'Want to read'], ['finished', 'Already finished']];
-  const status = h('select', null, options.map(([v, label]) => h('option', { value: v }, label)));
-  let timer;
-
-  const add = async (b) => {
-    if (status.value === 'reading' && currentBook()) return toast(`Finish ${currentBook().title} first`);
-    const rec = await store.save('books', { ...b, status: status.value, startedAt: localDate(), finishedAt: status.value === 'finished' ? localDate() : null, rating: 0, comment: '' });
-    close();
-    if (status.value === 'finished') finishSheet(rec);
-    else toast(`Added ${rec.title}`);
-  };
-
-  q.addEventListener('input', () => {
-    clearTimeout(timer);
-    const term = q.value.trim();
-    if (term.length < 2) return results.replaceChildren();
-    timer = setTimeout(async () => {
-      results.replaceChildren(h('p', { class: 'muted' }, 'Searching…'));
-      try {
-        const found = await searchBooks(term);
-        results.replaceChildren(...(found.length ? found.map((b) => h('div', { class: 'result-row' },
-          h('button', { class: 'result', onclick: () => add(b) },
-            cover(b, 'cover-xs'), h('span', null, h('strong', null, b.title), b.author && h('span', { class: 'muted' }, ` - ${b.author}`))),
-          fbConfigured() && workIdOf(b.olKey) && h('button', { class: 'btn small', 'aria-label': `Reviews of ${b.title}`, onclick: () => reviewsSheet(b) }, '★'))) : [h('p', { class: 'muted' }, 'Nothing found - add it by hand below.')]));
-      } catch (e) {
-        if (e.name !== 'AbortError' || q.value.trim() === term) results.replaceChildren(h('p', { class: 'muted' }, 'Search is not working right now (offline?). Add it by hand below.'));
-      }
-    }, 300);
-  });
-
-  const close = sheet('Add a book', h('div', { class: 'form' },
-    reading && h('p', { class: 'note' }, `You're reading ${reading.title}. Finish it first to start another - you can still save books for later.`),
-    h('label', null, 'Status', status),
-    q, results,
-    h('details', { class: 'manual' },
-      h('summary', null, 'Add by hand'),
-      manualTitle, manualAuthor,
-      h('button', { class: 'btn primary', onclick: () => {
-        const title = manualTitle.value.trim();
-        if (!title) return toast('Give it a title');
-        add({ title, author: manualAuthor.value.trim(), totalPages: 0, coverUrl: '', olKey: '' });
-      } }, 'Add book'))));
+  go('explore').then(() => document.querySelector('.search-input')?.focus());
 }
 
 // ---------- Notebook + comments ----------
 
-function journalScreen() {
-  const books = data.books.filter((b) => b.status !== 'want').sort((a, b) => (a.status === 'reading' ? -1 : b.status === 'reading' ? 1 : byNewest(a, b)));
-  if (!books.length) return h('div', { class: 'card' }, h('p', null, 'Start a book to open its notebook.'), h('button', { class: 'btn primary', onclick: addBookSheet }, 'Add a book'));
-  if (!books.some((b) => b.id === ui.bookId)) ui.bookId = books[0].id;
-  const book = books.find((b) => b.id === ui.bookId);
+// ---------- My Books ----------
+
+function booksScreen() {
+  const book = ui.bookView && data.books.find((b) => b.id === ui.bookView);
+  if (book) return bookDiary(book);
+  ui.bookView = null;
+  const seg = (id, label) => h('button', { class: `seg${ui.booksSection === id ? ' on' : ''}`, onclick: () => { ui.booksSection = id; render(); } }, label);
+  return h('div', { class: 'stack' },
+    h('div', { class: 'segmented' }, seg('shelf', '📚 Shelf'), seg('road', '🏆 Trophy road')),
+    ui.booksSection === 'road' ? trophyScreen() : shelf());
+}
+
+function shelf() {
+  if (!data.books.length) {
+    return h('div', { class: 'card hero' }, h('h2', null, 'No books yet'), h('p', { class: 'muted' }, 'Find any book in Explore and add it here.'),
+      h('button', { class: 'btn primary', onclick: addBookSheet }, '🔍 Find a book'));
+  }
+  const group = (status, title) => {
+    const list = data.books.filter((b) => b.status === status).sort(byNewest);
+    if (!list.length) return null;
+    return h('section', null, h('h2', { class: 'section-title' }, `${title} · ${list.length}`),
+      h('div', { class: 'stack' }, list.map((b) => {
+        const written = data.blocks.filter((x) => x.bookId === b.id && ((x.text || '').trim() || x.drawingId)).length;
+        return h('button', { class: 'book-row', onclick: () => openMyBook(b.id) }, cover(b, 'cover-sm'),
+          h('span', { class: 'book-row-text' }, h('strong', null, b.title), h('span', { class: 'muted small' }, b.author || ''),
+            h('span', { class: 'muted tiny' }, [written ? `${written} note${written === 1 ? '' : 's'}` : 'Notebook empty', b.rating ? '★'.repeat(b.rating) : ''].filter(Boolean).join(' · '))));
+      })));
+  };
+  return h('div', { class: 'stack' }, group('reading', 'Reading now'), group('want', 'Want to read'), group('finished', 'Finished'),
+    h('button', { class: 'btn ghost wide', onclick: addBookSheet }, '+ Add a book'));
+}
+
+function bookDiary(book) {
   const pages = pagesOf(data.blocks, book.id);
   const section = (id, label) => h('button', { class: `seg${ui.section === id ? ' on' : ''}`, onclick: async () => { await flushNotebook(); ui.section = id; render(); } }, label);
-
+  const statusBtn = book.status === 'want'
+    ? h('button', { class: 'btn small primary', onclick: () => startReading(book) }, 'Start reading')
+    : book.status === 'reading' ? h('button', { class: 'btn small', onclick: () => finishSheet(book) }, 'Finished 🏆') : null;
   return h('div', { class: 'stack' },
-    books.length > 1 && h('div', { class: 'chips', role: 'tablist' }, books.map((b) =>
-      h('button', { class: `chip${b.id === book.id ? ' on' : ''}`, role: 'tab', onclick: () => go('journal', b.id) }, b.title))),
-    h('div', { class: 'journal-head' }, cover(book, 'cover-sm'), h('div', null, h('h2', null, book.title), book.author && h('div', { class: 'muted' }, book.author))),
+    h('button', { class: 'link-btn back-link', onclick: async () => { await flushNotebook(); ui.bookView = null; render(); } }, '← My Books'),
+    h('div', { class: 'journal-head' }, cover(book, 'cover-sm'),
+      h('div', { class: 'grow' }, h('h2', null, book.title), book.author && h('div', { class: 'muted' }, book.author),
+        h('div', { class: 'actions tight' }, statusBtn,
+          bookKeyOf(book) && h('button', { class: 'btn small', onclick: () => openBookPageFor(book) }, 'Book page'),
+          book.status === 'finished' && h('button', { class: 'btn small', onclick: () => trophySheet(book) }, 'My review'),
+          h('button', { class: 'icon-btn', 'aria-label': `Remove ${book.title}`, onclick: () => removeWholeBook(book) }, '🗑')))),
     h('div', { class: 'segmented' }, section('notebook', '📓 Notebook'), section('comments', '💬 Comments')),
     ui.section === 'comments'
       ? commentsView({ book, blocks: data.blocks })
@@ -406,7 +433,7 @@ function trophyScreen() {
         s('path', { d, fill: 'none', 'vector-effect': 'non-scaling-stroke' })),
       nodes.map(({ book, ghost }, i) => h('button', {
         class: `node${ghost ? ' ghost' : ''}`, style: `top:${TOP + i * STEP - 52}px;left:${xs(i)}%`,
-        onclick: () => (ghost ? go('journal', book.id) : trophySheet(book)),
+        onclick: () => (ghost ? openMyBook(book.id) : trophySheet(book)),
       },
       cover(book, 'cover-sm'),
       h('span', { class: 'node-title' }, book.title),
@@ -438,24 +465,28 @@ function trophySheet(book) {
         close();
         toast('Saved');
       } }, 'Save'),
-      fbConfigured() && h('button', { class: 'btn', onclick: () => { close(); openReviews(book); } }, '★ Reviews'),
-      h('button', { class: 'btn', onclick: () => { close(); ui.section = 'notebook'; go('journal', book.id); } }, 'Open notebook'),
-      h('button', { class: 'btn ghost', onclick: async () => {
-        if (!confirm(`Remove ${book.title}, its notebook, comments and public review?`)) return;
-        for (const b of data.blocks.filter((x) => x.bookId === book.id)) await store.remove('blocks', b.id);
-        await store.remove('books', book.id);
-        await store.outboxBump(book.id); // the outbox sees the tombstone and deletes the public review
-        close();
-      } }, 'Remove'))));
+      fbConfigured() && bookKeyOf(book) && h('button', { class: 'btn', onclick: () => { close(); openBookPageFor(book); } }, '★ Reviews'),
+      h('button', { class: 'btn', onclick: () => { close(); openMyBook(book.id); } }, 'Open notebook'),
+      h('button', { class: 'btn ghost', onclick: async () => { if (await removeWholeBook(book)) close(); } }, 'Remove'))));
 }
 
-// Reviews for a book in the diary; deleting your own public review there also flips the switch off.
-function openReviews(book) {
-  reviewsSheet({ ...book, onUnpublish: async () => {
-    await store.save('books', { id: book.id, publicReview: false });
-    await store.outboxBump(book.id); // supersedes any upsert still queued for this book
-  } });
+// Any book, any status. The confirm says how much is written, so the right copy gets removed.
+async function removeWholeBook(book) {
+  const mine = data.blocks.filter((x) => x.bookId === book.id);
+  const written = mine.filter((x) => (x.text || '').trim() || x.drawingId).length;
+  if (!confirm(`Remove "${book.title}"?${written ? `\n\n${written} page${written === 1 ? '' : 's'}/comment${written === 1 ? '' : 's'} you wrote will be deleted too.` : ''}`)) return false;
+  for (const b of mine) await store.remove('blocks', b.id);
+  await store.remove('books', book.id);
+  await store.outboxBump(book.id); // the outbox sees the tombstone and deletes any public review
+  // ...then any other copy of the same book re-asserts its review (drained in order: delete, upsert).
+  const key = bookKeyOf(book);
+  for (const other of data.books) if (other.id !== book.id && key && bookKeyOf(other) === key) await store.outboxBump(other.id);
+  ui.bookView = null;
+  toast(`Removed ${book.title}`);
+  return true;
 }
+
+
 
 // ---------- Settings ----------
 
@@ -645,7 +676,14 @@ async function exportForClaude() {
 
 // ---------- Shell ----------
 
-const SCREENS = { now: nowScreen, journal: journalScreen, trophies: trophyScreen, settings: settingsScreen };
+// Explore: while the search box has focus, background changes wait (redrawing would close the keyboard).
+function exploreTab() {
+  const el = exploreScreen(exploreCtx);
+  busy.current = () => !!document.activeElement?.classList?.contains('search-input');
+  return el;
+}
+
+const SCREENS = { home: nowScreen, explore: exploreTab, books: booksScreen, me: settingsScreen };
 
 async function renderPill() {
   const pill = document.getElementById('pill');
@@ -692,7 +730,7 @@ function setupShell() {
     const d = syncer.state.drive;
     if (e.currentTarget.dataset.action === 'drawings') { await syncer.syncNow({ interactive: true }); renderPill(); return; }
     if (!(await store.getMeta('migratedV2', false)) && (d === 'disconnected' || d === 'signed-out')) syncer.syncNow({ interactive: true });
-    else go('settings');
+    else go('me');
   });
   setInterval(renderPill, 30000);
 }
@@ -752,7 +790,7 @@ async function boot() {
     return;
   }
   navigator.storage?.persist?.().catch(() => {});
-  try { const t = localStorage.getItem('rd-tab'); if (SCREENS[t]) ui.tab = t; } catch { /* ignore */ }
+  try { const t = localStorage.getItem('rd-tab'); const tab = OLD_TABS[t] || t; if (SCREENS[tab]) ui.tab = tab; } catch { /* ignore */ }
   setupShell();
   store.onChange(() => {
     renderPill();
@@ -772,7 +810,7 @@ async function boot() {
   syncer.onStatus((s) => {
     // Settings shows who you are: redraw it when the account check settles (not on every tick).
     const acct = `${s.account}|${s.handle}|${s.checked}`;
-    if (acct !== lastAccount) { lastAccount = acct; if (ui.tab === 'settings') { pendingRender = true; maybeRender(); } }
+    if (acct !== lastAccount) { lastAccount = acct; if (ui.tab === 'me') { pendingRender = true; maybeRender(); } }
     if (s.signedOut) { // another tab signed out: this one's diary is gone
       document.body.classList.add('gated');
       clear(main()).append(h('div', { class: 'gate' }, h('h1', null, 'Signed out'), h('p', null, 'You signed out in another tab.'),

@@ -287,8 +287,8 @@ export async function drainReviews() {
       entries,
       getBook: (id) => store.getRaw('books', id),
       api: {
-        upsertReview: (w, rating, text) => fb.upsertReview(uid, handle, w, rating, text),
-        deleteReview: (w) => fb.deleteReview(w, uid),
+        upsertReview: (book, rating, text) => fb.upsertReview2(uid, handle, book, rating, text),
+        deleteReview: (key) => fb.deleteReview2(key, uid),
       },
       ack: store.outboxAck,
     }), 'rd-reviews');
@@ -306,8 +306,8 @@ export async function drainReviews() {
 
 export async function deleteMyPublicData() {
   const books = await store.all('books');
-  const { workIdOf } = await import('./social.js');
-  const workIds = [...new Set(books.map((b) => workIdOf(b.olKey)).filter(Boolean))];
+  const { bookKeyOf } = await import('./catalog.js');
+  const workIds = [...new Set(books.map((b) => bookKeyOf(b)).filter(Boolean))];
   await drive.connect({ interactive: true }); // fresh token for Firebase's re-authentication
   // Marked first so an interrupted delete shows "finish deleting" instead of looking done.
   await store.setMeta('deleteJob', true);

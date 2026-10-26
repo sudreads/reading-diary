@@ -20,7 +20,12 @@ test('work ids come only from Open Library work keys', () => {
 const book = (extra) => ({ id: 'b', olKey: '/works/OL1W', status: 'finished', publicReview: true, rating: 4, comment: 'Good', ...extra });
 
 test('desired review: publish only finished, public, rated books with a work id', () => {
-  assert.deepEqual(desiredReview(book()), { action: 'upsert', workId: 'OL1W', rating: 4, text: 'Good' });
+  const up = desiredReview(book());
+  assert.equal(up.action, 'upsert');
+  assert.equal(up.key, 'ol:OL1W');
+  assert.equal(up.rating, 4);
+  assert.equal(up.text, 'Good');
+  assert.equal(desiredReview(book({ bookKey: 'isbn:9781612680194', olKey: '' })).key, 'isbn:9781612680194');
   assert.equal(desiredReview(book({ publicReview: false })).action, 'delete');
   assert.equal(desiredReview(book({ publicReview: undefined })).action, 'delete'); // pre-1.2 books stay private
   assert.equal(desiredReview(book({ status: 'reading' })).action, 'delete');

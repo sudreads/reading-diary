@@ -100,7 +100,7 @@ test('catalog: prefix search pages of 20 allowed, bigger refused', async () => {
 // ---------- 2.0 reviews ----------
 
 const KEY = 'isbn:9781612680194';
-const review = (uid, handle, extra = {}) => ({ bookKey: KEY, uid, handle, rating: 4, text: 'Great', title: 'Rich Dad Poor Dad', author: 'Robert T. Kiyosaki', coverUrl: '', createdAt: serverTimestamp(), updatedAt: serverTimestamp(), ...extra });
+const review = (uid, handle, extra = {}) => ({ bookKey: KEY, uid, handle, rating: 4, text: 'Great', title: 'Rich Dad Poor Dad', author: 'Robert T. Kiyosaki', coverUrl: 'https://books.google.com/books/content?id=x', createdAt: serverTimestamp(), updatedAt: serverTimestamp(), ...extra });
 const seedCatalog = () => admin((fs) => setDoc(doc(fs, 'catalog', KEY), { ...book(), createdAt: new Date() }));
 
 test('reviews: valid review on a catalogued book works; needs the catalog entry', async () => {
@@ -118,7 +118,8 @@ test('reviews: impersonation, forged hints and bad bodies are refused', async ()
   await assertFails(setDoc(doc(db('bob'), 'books', KEY, 'reviews', 'alice'), review('alice', 'alice_reads')));
   await assertFails(setDoc(doc(db('bob'), 'books', KEY, 'reviews', 'bob'), review('bob', 'alice_reads')));
   const ref = doc(db('alice'), 'books', KEY, 'reviews', 'alice');
-  for (const bad of [{ rating: 6 }, { rating: 2.5 }, { text: 'x'.repeat(2001) }, { coverUrl: 'https://evil.example/c.jpg' }, { bookKey: 'isbn:9780000000002' }, { extra: 1 }, { createdAt: new Date() }]) {
+  for (const bad of [{ rating: 6 }, { rating: 2.5 }, { text: 'x'.repeat(2001) }, { coverUrl: 'https://evil.example/c.jpg' }, { bookKey: 'isbn:9780000000002' }, { extra: 1 }, { createdAt: new Date() },
+    { title: 'A completely different book' }, { author: 'Someone Else' }, { coverUrl: 'https://covers.openlibrary.org/b/id/999-M.jpg' }]) {
     await assertFails(setDoc(ref, review('alice', 'alice_reads', bad)));
   }
 });

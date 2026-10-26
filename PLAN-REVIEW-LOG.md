@@ -555,3 +555,26 @@ Accepted all nine; see "Revisions after Codex round 2". Daily counters dropped a
 - P1-5 rejected: equal (t, d) with different payload needs two installs sharing one device id; deviceId is a per-install random UUID and is never exported or restored.
 - P1-6 rejected for the beta: data maps are open by design (unknown fields preserved); an owner can only bloat their own documents, which is the accepted availability risk in PLAN-v2.
 Review-skill pass also fixed: edits during the move no longer block it, refused records surface in the pill instead of a silent eternal "Saving", reviews wait for a confirmed session.
+
+## v2.0 phases B/C/E - post-build inspection (Codex, fresh session)
+- **Critical — [js/firebase.js:252, `deleteMyPublicData`]** Deleting an account only deletes reviews for caller-supplied local `workIds`; reviews for removed books, another device’s books, or stale outbox entries remain publicly readable after the Firebase account is deleted. **Fix:** delete all `books/*/reviews/{uid}` and legacy reviews server-side (Admin SDK/Cloud Function) before deleting the Auth user.
+
+- **High — [js/catalog.js:39, `fromGoogle`; js/catalog.js:54, `fromOpenLibrary`; js/catalog.js:94, `mergeResults`]** The same work receives different “canonical” keys depending on search source/availability (`isbn:`, `gb:`, or `ol:`); Google quota fallback therefore fragments catalog entries, reviews, ratings, and trending. UI dedupe only hides the duplicate search row. **Fix:** resolve every source to one persisted cross-source canonical ID (prefer a verified ISBN, with a work-ID mapping fallback) before creating catalog/review paths.
+
+- **High — [firestore.rules:118; js/firebase.js:212; js/explore.js:36]** A reviewer can supply arbitrary `title`, `author`, and `coverUrl` for an existing book key; Explore trusts those review fields, so one member can spoof a book’s identity in latest/trending feeds. **Fix:** require review display fields to equal the corresponding catalog document, or stop storing/rendering reviewer-controlled display hints.
+
+- **Medium — [js/app.js:473, `removeWholeBook`]** Removing one of two local books with the same canonical key bumps that book’s outbox entry, which deletes the shared public review even if the remaining duplicate is still finished and public. The dedupe path explicitly avoids this problem, but manual removal does not. **Fix:** before enqueueing deletion, check whether another live local book with the same key still desires that review.
+
+- **Medium — [js/firebase.js:185, `reviewsFor`]** For Open Library keys, each “50 review” page runs two `limit(50)` queries and returns up to 100 cards; pagination independently advances both cursors, creating unnecessarily expensive and inconsistent pages. **Fix:** merge the two ordered streams and emit a single 50-item page with cursors advanced only through consumed items.
+
+- **Medium — [js/explore.js:24, `loadFeed`]** Opening Explore can perform 90 collection-group reads per fresh page load (three 30-document pages); the 15-minute cache is memory-only, so reloads/tabs multiply costs. **Fix:** fetch one small page or serve trending/latest from a maintained aggregate document.
+
+I did not find a direct XSS sink in the supplied rendering path: third-party text is inserted as text nodes, and descriptions are reduced to text before display.
+### Claude's dispositions
+- Critical (delete-my-data misses reviews of books no longer local): accepted - collection-group query on uid (allowed: pages of 30) deletes every own review before the Auth user; COLLECTION_GROUP uid index deployed.
+- High (one work, several keys across sources): acknowledged, deferred - mostly disappears once Google Books is enabled (search then resolves consistently to isbn:/gb:); a cross-source mapping is a later step.
+- High (spoofable review display fields): accepted - rules require title/author/coverUrl to equal the immutable catalog entry; client copies them from it; 3 new denied tests.
+- Medium (removing one duplicate deletes the shared review): accepted - other live copies with the same key re-bump after the removal (delete then upsert, in order).
+- Medium (two-stream pagination): accepted - legacy 1.x reviews only on the first page.
+- Medium (90 reads per Explore load): accepted - one page of 30, cached 15 min.
+Review-skill pass also fixed: search box losing focus on background redraws, Android back closing the app from a book page, stale search cache after adding a community book.

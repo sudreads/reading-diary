@@ -121,8 +121,10 @@ service cloud.firestore {
         && request.resource.data.bookKey == key
         && request.resource.data.uid == me()
         && request.resource.data.handle == myHandle()
-        && str(request.resource.data.title, 300) && str(request.resource.data.author, 300)
-        && validCover(request.resource.data.coverUrl)
+        // Display fields come from the catalog entry, so nobody can dress a review up as another book.
+        && request.resource.data.title == get(doc('catalog/' + key)).data.title
+        && request.resource.data.author == get(doc('catalog/' + key)).data.author
+        && request.resource.data.coverUrl == get(doc('catalog/' + key)).data.coverUrl
         && request.resource.data.createdAt == request.time
         && validReviewBody(request.resource.data);
       // One edit per review every 10 seconds.
