@@ -88,7 +88,8 @@ test('catalog: bad keys, forged creators, hostile covers and wrong lowercase are
   await assertFails(setDoc(doc(fs, 'catalog', 'isbn:9781612680194'), book({ coverUrl: 'javascript:alert(1)' })));
   await assertFails(setDoc(doc(fs, 'catalog', 'isbn:9781612680194'), book({ titleLower: 'RICH' })));
   await assertFails(setDoc(doc(fs, 'catalog', 'isbn:9781612680194'), book({ title: '' , titleLower: '' })));
-  await assertSucceeds(setDoc(doc(fs, 'catalog', 'c:0b9a6c1e-3f4d-4a5b-8c7d-9e0f1a2b3c4d'), book({ key: 'c:0b9a6c1e-3f4d-4a5b-8c7d-9e0f1a2b3c4d', isbn13: '', coverUrl: '' })));
+  // hand-made books can't enter the shared catalog
+  await assertFails(setDoc(doc(fs, 'catalog', 'c:0b9a6c1e-3f4d-4a5b-8c7d-9e0f1a2b3c4d'), book({ key: 'c:0b9a6c1e-3f4d-4a5b-8c7d-9e0f1a2b3c4d', isbn13: '', coverUrl: '' })));
 });
 
 test('catalog: prefix search pages of 20 allowed, bigger refused', async () => {

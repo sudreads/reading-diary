@@ -5,7 +5,7 @@
 import * as fb from './firebase.js';
 import * as syncer from './syncer.js';
 import { h, sheet, toast } from './dom.js';
-import { searchBooks, bookDetails, plainText, bookKeyOf, clearSearchCache } from './catalog.js';
+import { searchBooks, bookDetails, plainText, bookKeyOf } from './catalog.js';
 import { averageOf, REPORT_REASONS } from './social.js';
 
 const monthYear = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : '');
@@ -67,17 +67,13 @@ export function exploreScreen(ctx) {
     home.hidden = true;
     results.replaceChildren(h('p', { class: 'muted' }, 'Searching…'));
     try {
-      const found = await searchBooks(q, { community: canRead() ? fb.searchCommunity : null });
+      const found = await searchBooks(q);
       if (q !== lastQuery) return;
-      results.replaceChildren(
-        ...(found.length ? found.map(resultRow) : [h('p', { class: 'muted' }, 'No books found.')]),
-        h('div', { class: 'card add-missing' },
-          h('p', null, 'Can\'t find your book?'),
-          h('button', { class: 'btn', onclick: () => addMissingSheet(q, ctx) }, '+ Add it to Reading Diary')));
+      results.replaceChildren(...(found.length ? found.map(resultRow)
+        : [h('p', { class: 'muted' }, 'No books found. Try the title in another language, or the author\'s name.')]));
     } catch (e) {
       if (e.name === 'AbortError') return;
-      results.replaceChildren(h('p', { class: 'muted' }, navigator.onLine ? 'Search isn\'t working right now. Try again in a moment.' : 'You\'re offline - search needs the internet.'),
-        h('button', { class: 'btn', onclick: () => addMissingSheet(q, ctx) }, '+ Add a book by hand'));
+      results.replaceChildren(h('p', { class: 'muted' }, navigator.onLine ? 'Search isn\'t working right now. Try again in a moment.' : 'You\'re offline - search needs the internet.'));
     }
   }
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run(input.value), 400); });
@@ -105,35 +101,6 @@ export function exploreScreen(ctx) {
   }
   if (lastQuery.trim().length >= 2) run(lastQuery);
   return h('div', { class: 'stack' }, input, results, home);
-}
-
-// ---------- Add a missing book ----------
-
-function addMissingSheet(q, ctx) {
-  const title = h('input', { placeholder: 'Title', maxlength: '300', value: q || '' });
-  const author = h('input', { placeholder: 'Author', maxlength: '300' });
-  const pages = h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'Pages (optional)' });
-  const isbn = h('input', { inputmode: 'numeric', placeholder: 'ISBN (optional, on the back cover)', maxlength: '17' });
-  const close = sheet('Add a book', h('div', { class: 'form' },
-    h('p', { class: 'muted small' }, 'It becomes findable for everyone in Reading Diary, so others can add and review it too.'),
-    title, author, pages, isbn,
-    h('button', { class: 'btn primary', onclick: async (e) => {
-      const t = title.value.trim();
-      if (!t) return toast('Give it a title');
-      const digits = isbn.value.replace(/[^0-9]/g, '');
-      const isbn13 = /^97[89]\d{10}$/.test(digits) ? digits : '';
-      const n = Math.max(0, Math.min(100000, Math.floor(Number(pages.value) || 0)));
-      e.currentTarget.disabled = true;
-      let key = '';
-      if (canRead()) {
-        try {
-          key = await fb.addCommunityBook(syncer.state.uid, { title: t, author: author.value.trim(), pages: n, isbn13 });
-          clearSearchCache(); // so searching again finds it right away
-        } catch { /* offline: keep it private */ }
-      }
-      close();
-      chooseStatusSheet({ key, title: t, author: author.value.trim(), pages: n, isbn13, coverUrl: '' }, ctx);
-    } }, 'Add book')));
 }
 
 // ---------- Add to My Books ----------

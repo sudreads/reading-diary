@@ -89,7 +89,8 @@ service cloud.firestore {
     match /catalog/{key} {
       allow get: if signedIn();
       allow list: if signedIn() && request.query.limit <= 20;
-      allow create: if signedIn() && validBookKey(key)
+      // Only books found in Google Books / Open Library: hand-made (c:) entries are refused.
+      allow create: if signedIn() && validBookKey(key) && !key.matches('^c:.*')
         && exact(request.resource.data, ['key', 'title', 'titleLower', 'author', 'isbn13', 'pages', 'coverUrl', 'createdBy', 'createdAt'])
         && request.resource.data.key == key
         && str(request.resource.data.title, 300) && request.resource.data.title.size() > 0

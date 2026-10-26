@@ -1,5 +1,5 @@
 // Offline shell. Bump CACHE on every release; the page asks before switching versions.
-const CACHE = 'rd-v10';
+const CACHE = 'rd-v11';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/caveat-500-latin.woff2',

@@ -158,21 +158,6 @@ export async function catalogDoc(key) {
   return s.exists() ? s.data() : null;
 }
 
-// Books readers added themselves, by title prefix.
-export async function searchCommunity(q) {
-  const { db, fs } = await load();
-  const lo = q.trim().toLowerCase();
-  const res = await fs.getDocs(fs.query(fs.collection(db, 'catalog'), fs.where('titleLower', '>=', lo), fs.where('titleLower', '<', `${lo}`), fs.limit(20)));
-  return res.docs.map((s) => s.data()).filter((d) => d.key.startsWith('c:'))
-    .map((d) => ({ key: d.key, source: 'community', title: d.title, author: d.author, year: '', pages: d.pages || 0, isbn13: d.isbn13 || '', coverUrl: d.coverUrl || '', description: '', categories: [], language: '' }));
-}
-
-export async function addCommunityBook(uid, { title, author, pages, isbn13 }) {
-  const key = `c:${crypto.randomUUID()}`;
-  await ensureCatalog(uid, { key, title, author, pages, isbn13, coverUrl: '' });
-  return key;
-}
-
 // ----- reviews (2.0: books/{bookKey}/reviews/{uid}; 1.x works/{OL}/reviews stay readable) -----
 
 const legacyWork = (key) => (key.startsWith('ol:') ? key.slice(3) : null);

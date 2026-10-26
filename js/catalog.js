@@ -1,10 +1,11 @@
 // Finding books. Google Books first (big, includes Hebrew, has descriptions), Open Library as
-// backup, and the community catalog (books readers added themselves) on top. Every result carries
-// one canonical book key that reviews, the catalog and trending all share:
+// backup. Only real books from these sources can be added - no hand-made entries, so nobody can
+// invent a book. Every result carries one canonical book key that reviews, the catalog and
+// trending all share:
 //   isbn:<13 digits>  a Google Books volume with an ISBN-13
 //   gb:<volumeId>     a Google Books volume without one
 //   ol:<OL...W>       an Open Library work (1.x books, and the Open Library fallback)
-//   c:<uuid>          added by a reader
+// (c:<uuid> keys are still recognised so nothing breaks, but can no longer be created.)
 // Display data from these APIs is untrusted text: callers render it with textContent only.
 
 import { FIREBASE_CONFIG } from './config.js';
@@ -102,11 +103,8 @@ export function mergeResults(lists) {
   return out;
 }
 
-export const clearSearchCache = () => cache.clear();
-
 let inflight = null;
-// community: async (q) -> results from catalog/ (Firestore prefix search), injected by the caller.
-export async function searchBooks(query, { community } = {}) {
+export async function searchBooks(query) {
   const q = query.trim();
   if (q.length < 2) return [];
   if (cache.has(q)) return cache.get(q);
@@ -115,14 +113,13 @@ export async function searchBooks(query, { community } = {}) {
   inflight = ctrl;
   const timer = setTimeout(() => ctrl.abort(), 9000);
   try {
-    const mine = community ? community(q).catch(() => []) : Promise.resolve([]);
     let primary = [];
     if (!googleCoolingDown()) {
       try { primary = await searchGoogle(q, ctrl.signal); } catch (e) { if (e.quota) coolGoogleDown(); else if (e.name === 'AbortError') throw e; }
     }
     // Open Library fills in when Google is out of quota, finds nothing, or finds little.
     const backup = primary.length >= 8 ? [] : await searchOpenLibrary(q, ctrl.signal).catch(() => []);
-    const results = mergeResults([await mine, primary, backup]);
+    const results = mergeResults([primary, backup]);
     cache.set(q, results);
     return results;
   } finally {

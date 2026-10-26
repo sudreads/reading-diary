@@ -11,7 +11,7 @@ import { exploreScreen, bookPage, chooseStatusSheet } from './explore.js';
 import { dedupePlan } from './dedupe.js';
 import { handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '2.0.0';
+const VERSION = '2.0.1';
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'explore', label: 'Explore', icon: '🔍' },
@@ -535,18 +535,6 @@ function settingsScreen() {
         h('h2', null, 'Get book ideas'),
         h('p', { class: 'muted small' }, 'Copies your ratings, comments and lessons as text. Paste it to Claude and ask what to read next.'),
         h('button', { class: 'btn', onclick: exportForClaude }, 'Export for Claude')),
-      h('div', { class: 'card' },
-        h('h2', null, 'Reminders (like Duolingo)'),
-        h('details', null, h('summary', null, 'Remind me when I get home'),
-          h('ol', { class: 'steps' },
-            h('li', null, 'Install the free app MacroDroid from the Play Store.'),
-            h('li', null, 'Add Macro → Trigger: Connectivity → Wi-Fi State Change → Connected to network → pick your home Wi-Fi.'),
-            h('li', null, 'Action: Notification → Display Notification. Title "Time to read 📖".'),
-            h('li', null, `On notification press: Open Website → ${location.origin}${location.pathname}`),
-            h('li', null, 'Constraint (optional): Time of Day, e.g. 15:00-22:00, so it does not fire at midnight.'),
-            h('li', null, 'Phone Settings → Apps → MacroDroid → Battery → Unrestricted, or Android may silence it.'))),
-        h('details', null, h('summary', null, 'Or remind me at a fixed time'),
-          h('p', { class: 'small' }, 'Same as above, but use Trigger: Date/Time → Day/Time Trigger, e.g. every day at 20:30.'))),
       h('div', { class: 'card' },
         h('h2', null, 'Storage'),
         h('p', { class: 'small' }, persisted ? 'Chrome agreed to keep this app\'s data (best effort).' : 'Chrome has not promised to keep this app\'s data. The Drive backup is what really protects it.'),
