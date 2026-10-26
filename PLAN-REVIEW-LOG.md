@@ -578,3 +578,33 @@ I did not find a direct XSS sink in the supplied rendering path: third-party tex
 - Medium (two-stream pagination): accepted - legacy 1.x reviews only on the first page.
 - Medium (90 reads per Explore load): accepted - one page of 30, cached 15 min.
 Review-skill pass also fixed: search box losing focus on background redraws, Android back closing the app from a book page, stale search cache after adding a community book.
+
+# v2.1 reminders - plan review (1 round)
+
+## Round 1 - Codex
+- “On” cannot promise daily delivery: Periodic Sync needs an installed, separately launched app, engagement, a previously used network, and Chrome may stop firing it entirely for infrequent use. [Chrome documentation](https://developer.chrome.com/docs/capabilities/periodic-background-sync?authuser=104) Fix: describe it as best-effort and add an in-app reminder fallback on the next app open.
+
+- The 09:00–21:30 gate can suppress the only wake-up Chrome gives that day (or longer), defeating the goal. Fix: remove the time gate, or accept that reminders may be skipped and state that explicitly.
+
+- `remindersOn` does not prove a periodic registration still exists; browser/storage changes can remove it and permission is dynamic rather than a durable user grant. Fix: on every app launch call `getTags()` and reconcile the card with actual registration/permission.
+
+- “Notifications are blocked in phone settings” cannot be diagnosed reliably from web APIs; permission may be granted while Android/Chrome suppresses delivery, and a successful `showNotification()` call does not prove it was seen. Fix: label this state “notification delivery may be blocked” and provide a test action rather than asserting the cause.
+
+- The worker is said to open IndexedDB read-only but must write `lastReminder`; separate reads/writes permit races with the page and duplicate decisions. Fix: make decision plus reminder reservation one short `readwrite` transaction on `meta` (and required reads).
+
+- Writing `lastReminder` before `showNotification()` can lose the day if notification display fails; writing it after can duplicate after worker termination. Fix: persist a `pending` reservation atomically, attempt display, then finalize it, with a defined retry/expiry policy.
+
+- `onupgradeneeded` does not exclusively mean “the DB did not exist”; it also fires when code opens a higher version. [IndexedDB docs](https://developer.mozilla.org/en-US/docs/Web/API/IDBOpenDBRequest/upgradeneeded_event) Fix: have the worker open with no version, abort only on unexpected schema/absent stores, and never run migrations.
+
+- Page/SW schema deployments can block upgrades or leave a stale worker reading incompatible records. [IndexedDB version-change guidance](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API/Using_IndexedDB) Fix: keep the reminder reader backward-compatible, close page DB connections on `versionchange`, and deploy schema changes separately from incompatible worker logic.
+
+- Local-date deduplication breaks around manual clock changes, timezone travel, and midnight boundaries. Fix: store both the local date and a timestamp, and enforce “one per local calendar day” with explicit clock-change behavior.
+
+- Book titles and reading streaks on a lock screen leak diary activity to anyone holding the phone. Fix: default to generic notification text and make title/streak disclosure an explicit privacy option.
+
+- “Same day logic as the app” will drift unless it is actually shared. Fix: put date/counting logic in one worker-safe shared module with timezone/midnight tests.
+
+VERDICT: REVISE
+### Claude's response
+Accepted: best-effort wording (the daily check-in screen on open is the existing fallback); quiet hours widened to 08:00-22:30 and stated; getTags() reconciliation on every launch; "delivery may be blocked" wording + test button; decision and reservation in one readwrite transaction; worker opens the DB without a version and aborts if it would create it (never migrates; page already closes on versionchange); generic lock-screen text (streak count, no book title); one shared day/streak module - the service worker becomes a module worker importing js/derive.js.
+Rejected: manual clock-change / timezone-travel handling (one reminder per local calendar day is the intended behaviour; worst case is one extra or one missed reminder).

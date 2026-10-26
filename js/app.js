@@ -11,7 +11,7 @@ import { exploreScreen, bookPage, chooseStatusSheet } from './explore.js';
 import { dedupePlan } from './dedupe.js';
 import { handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '2.0.1';
+const VERSION = '2.1.0';
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'explore', label: 'Explore', icon: '🔍' },
@@ -531,6 +531,7 @@ function settingsScreen() {
           h('button', { class: 'btn', onclick: downloadBackup }, 'Download backup'),
           h('button', { class: 'btn', onclick: () => fileIn.click() }, 'Restore from file'), fileIn),
         h('p', { class: 'muted small' }, 'Restoring only adds what is missing - it never changes or deletes anything you already have.')),
+      remindersCard(),
       h('div', { class: 'card' },
         h('h2', null, 'Get book ideas'),
         h('p', { class: 'muted small' }, 'Copies your ratings, comments and lessons as text. Paste it to Claude and ask what to read next.'),
@@ -723,11 +724,84 @@ function setupShell() {
   setInterval(renderPill, 30000);
 }
 
+// ---------- Reading reminders (no server: Chrome's Periodic Background Sync wakes the worker) ----------
+
+const REMINDER_TAG = 'read-reminder';
+const REMINDER_INTERVAL = 12 * 60 * 60 * 1000;
+
+// What is really true right now - never just what was switched on earlier.
+async function reminderStatus() {
+  if (!('serviceWorker' in navigator) || !('Notification' in window)) return { ok: false, why: 'This browser can\'t show reminders.' };
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg || !('periodicSync' in reg)) return { ok: false, why: 'Reminders need Chrome on Android, with Reading Diary installed to your home screen.' };
+  // The new worker (with the reminder code) only takes over once the update is accepted.
+  if (reg.waiting) return { ok: false, why: 'Tap "A new version is ready" at the top first, then switch reminders on here.' };
+  if (reg.active && !reg.active.scriptURL.endsWith('/sw.js')) return { ok: false, why: "Reminders aren't available in this browser." };
+  const periodic = await navigator.permissions.query({ name: 'periodic-background-sync' }).then((p) => p.state).catch(() => 'denied');
+  const tags = await reg.periodicSync.getTags().catch(() => []);
+  return { ok: true, reg, notif: Notification.permission, periodic, registered: tags.includes(REMINDER_TAG), on: await store.getMeta('remindersOn', false) };
+}
+
+// On every launch: if reminders are meant to be on but the browser dropped them, put them back.
+async function reconcileReminders(reg) {
+  try {
+    if (!(await store.getMeta('remindersOn', false)) || !('periodicSync' in reg) || Notification.permission !== 'granted') return;
+    const tags = await reg.periodicSync.getTags();
+    if (!tags.includes(REMINDER_TAG)) await reg.periodicSync.register(REMINDER_TAG, { minInterval: REMINDER_INTERVAL });
+  } catch { /* permission withdrawn: the card says so */ }
+}
+
+async function setReminders(on) {
+  const st = await reminderStatus();
+  if (!st.ok) return toast(st.why);
+  if (!on) {
+    await st.reg.periodicSync.unregister(REMINDER_TAG).catch(() => {});
+    await store.setMeta('remindersOn', false);
+    return;
+  }
+  if (Notification.permission !== 'granted' && (await Notification.requestPermission()) !== 'granted') {
+    return toast('Notifications are off for Reading Diary - allow them in your phone\'s settings.');
+  }
+  try {
+    await st.reg.periodicSync.register(REMINDER_TAG, { minInterval: REMINDER_INTERVAL });
+    await store.setMeta('remindersOn', true);
+    toast('Reminders on');
+  } catch {
+    toast('Chrome didn\'t allow background reminders. Install the app to your home screen and open it from there.');
+  }
+}
+
+function remindersCard() {
+  const box = h('div', { class: 'card' }, h('h2', null, 'Reading reminders'), h('p', { class: 'muted small' }, 'Checking…'));
+  reminderStatus().then((st) => {
+    if (!st.ok) { box.replaceChildren(h('h2', null, 'Reading reminders'), h('p', { class: 'small' }, st.why)); return; }
+    const active = st.on && st.registered && st.notif === 'granted';
+    const sw = h('input', { type: 'checkbox', checked: active });
+    sw.addEventListener('change', async () => { sw.disabled = true; await setReminders(sw.checked); render(); });
+    const state = active ? 'On. If you haven\'t read yet, your phone reminds you about once a day.'
+      : st.on && st.notif !== 'granted' ? 'Notifications for Reading Diary seem to be blocked - check your phone\'s settings, then switch this on again.'
+        : st.on && !st.registered ? 'Chrome dropped the reminder - switch it off and on again.' : 'Off.';
+    box.replaceChildren(
+      h('h2', null, 'Reading reminders'),
+      h('label', { class: 'switch-row' }, sw, h('span', null, h('strong', null, 'Remind me to read'), h('span', { class: 'muted small block' }, state))),
+      h('p', { class: 'muted small' }, 'Chrome decides the exact time (roughly daily, more reliable the more you use the app). Never at night, at most once a day, and only on days you haven\'t read. Opening the app always asks "Did you read today?" too.'),
+      st.notif === 'granted' && h('button', { class: 'btn small', onclick: async () => {
+        const reg = await navigator.serviceWorker.ready;
+        await reg.showNotification('📖 Test reminder', { body: 'This is what a reading reminder looks like.', tag: 'read-reminder-test', icon: 'icons/icon-192.png' });
+      } }, 'Send a test reminder'));
+  });
+  return box;
+}
+
 function setupServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   if (new URLSearchParams(location.search).has('emu')) return; // emulator testing: always fresh files
   let updating = false;
-  navigator.serviceWorker.register('sw.js').then((reg) => {
+  // A module worker: it imports the app's day/streak logic for reading reminders.
+  navigator.serviceWorker.register('sw.js', { type: 'module' })
+    .catch(() => navigator.serviceWorker.register('sw-classic.js')) // no module workers: offline only
+    .then((reg) => {
+    reconcileReminders(reg);
     const offer = (w) => {
       const bar = document.getElementById('update');
       bar.hidden = false;
