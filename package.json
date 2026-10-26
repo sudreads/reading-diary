@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-reading-diary \"node --test tests/rules.emu.mjs\""
+    "test:rules": "firebase emulators:exec --only firestore --project demo-reading-diary \"node --test --test-concurrency=1 tests/rules.emu.mjs tests/rules2.emu.mjs\""
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "5.0.2",

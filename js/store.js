@@ -4,6 +4,7 @@
 import { nextRev, maxT } from './rev.js';
 import { mergeRecord, sameRecord, KINDS } from './merge.js';
 import { additiveRestore } from './validate.js';
+import { toDocs, fromDoc, ridOf } from './cloud.js';
 
 const DB_NAME = 'reading-diary';
 const DB_VERSION = 1;
@@ -85,15 +86,20 @@ export async function get(kind, id) {
   return r && !r.deleted ? r : null;
 }
 
-async function write(kind, id, change) {
+// which: the cloud documents this write changes - 'content', 'rank' (blocks) or 'both'. They are
+// marked dirty ({rid: t}) in the same transaction, so a crash can never lose a pending upload.
+async function write(kind, id, change, which = 'content') {
   const tx = db.transaction([kind, 'meta'], 'readwrite');
   const store = tx.objectStore(kind), meta = tx.objectStore('meta');
-  const [hi, gen, dev, prev] = await Promise.all([
-    req(meta.get('highestT')), req(meta.get('mutationGen')), req(meta.get('deviceId')), req(store.get(id)),
+  const [hi, gen, dev, prev, dirtyRow] = await Promise.all([
+    req(meta.get('highestT')), req(meta.get('mutationGen')), req(meta.get('deviceId')), req(store.get(id)), req(meta.get('dirty')),
   ]);
   const rev = nextRev(hi ? hi.value : 0, dev.value);
   const next = change(prev || { id }, rev);
   store.put(next);
+  const dirty = dirtyRow ? dirtyRow.value : {};
+  for (const d of toDocs(kind, next, which)) dirty[d.rid] = d.t;
+  meta.put({ key: 'dirty', value: dirty });
   meta.put({ key: 'highestT', value: rev.t });
   meta.put({ key: 'mutationGen', value: (gen ? gen.value : 0) + 1 });
   await done(tx);
@@ -102,20 +108,83 @@ async function write(kind, id, change) {
 }
 
 export function save(kind, rec) {
+  const withRank = kind === 'blocks' && 'rank' in rec;
   return write(kind, rec.id || crypto.randomUUID(), (prev, rev) => {
     const next = { ...prev, ...rec, id: prev.id, rev };
-    if ('rank' in rec) next.rankRev = rev;
+    if (withRank) next.rankRev = rev;
     return next;
-  });
+  }, withRank ? 'both' : 'content');
 }
 
 export function setRank(id, rank) {
-  return write('blocks', id, (prev, rev) => ({ ...prev, rank, rankRev: rev }));
+  return write('blocks', id, (prev, rev) => ({ ...prev, rank, rankRev: rev }), 'rank');
 }
 
 export function remove(kind, id) {
-  return write(kind, id, (prev, rev) => ({ ...prev, deleted: true, rev }));
+  return write(kind, id, (prev, rev) => ({ ...prev, deleted: true, rev }), 'content');
 }
+
+// ---------- cloud (2.0) ----------
+
+export async function dirty() { return getMeta('dirty', {}); }
+
+// The current document for a dirty rid, built from the record as it is now.
+export async function docFor(rid) {
+  const cut = rid.indexOf('_');
+  const kind = rid.slice(0, cut), id = rid.slice(cut + 1);
+  const rec = await getRaw(kind === 'rank' ? 'blocks' : kind, id);
+  if (!rec) return null;
+  return toDocs(kind === 'rank' ? 'blocks' : kind, rec, kind === 'rank' ? 'rank' : 'content')[0] || null;
+}
+
+// Clears a dirty entry only if no newer edit re-marked it meanwhile.
+export async function dirtyAck(rid, t) {
+  const tx = db.transaction('meta', 'readwrite');
+  const meta = tx.objectStore('meta');
+  const row = await req(meta.get('dirty'));
+  const d = row ? row.value : {};
+  if (d[rid] === t) { delete d[rid]; meta.put({ key: 'dirty', value: d }); }
+  await done(tx);
+}
+
+// Marks the given documents as pending uploads, atomically with any concurrent write.
+export async function markDirtyDocs(docs) {
+  const tx = db.transaction('meta', 'readwrite');
+  const meta = tx.objectStore('meta');
+  const row = await req(meta.get('dirty'));
+  const d = row ? row.value : {};
+  for (const doc of docs) d[doc.rid] = doc.t;
+  meta.put({ key: 'dirty', value: d });
+  await done(tx);
+}
+
+// Migration: every record (tombstones included) becomes a pending upload.
+export async function markAllDirty() {
+  const tx = db.transaction([...KINDS, 'meta'], 'readwrite');
+  const meta = tx.objectStore('meta');
+  const row = await req(meta.get('dirty'));
+  const d = row ? row.value : {};
+  for (const k of KINDS) for (const rec of await req(tx.objectStore(k).getAll())) for (const doc of toDocs(k, rec)) d[doc.rid] = doc.t;
+  meta.put({ key: 'dirty', value: d });
+  await done(tx);
+}
+
+export async function mergeRemoteDocs(docs) {
+  const state = { books: [], blocks: [], sessions: [] };
+  for (const doc of docs) {
+    const [kind, rec] = fromDoc(doc);
+    if (state[kind]) state[kind].push(rec);
+  }
+  await mergeIn(state);
+}
+
+// Every local document, for the backup proof.
+export async function allDocs() {
+  const out = [];
+  for (const k of KINDS) for (const rec of await all(k)) out.push(...toDocs(k, rec));
+  return out;
+}
+export { ridOf };
 
 // Including tombstones - the review outbox needs a deleted book's work id to delete its review.
 export async function getRaw(kind, id) {
@@ -155,7 +224,9 @@ export async function snapshot() {
 // Merge remote records in one transaction, re-reading each local record inside it so a write
 // that landed during the download is merged, not overwritten. capClock (restore) still advances
 // the clock past imported records so later edits beat them, but never beyond the wall clock.
-export async function mergeIn(state, { capClock = false } = {}) {
+// localEdit (restore): the merged records count as local changes - their dirty marks and the
+// generation bump happen in this same transaction, so a concurrent edit can't erase them.
+export async function mergeIn(state, { capClock = false, localEdit = false } = {}) {
   const tx = db.transaction([...KINDS, 'meta'], 'readwrite');
   let changed = false;
   for (const k of KINDS) {
@@ -171,8 +242,15 @@ export async function mergeIn(state, { capClock = false } = {}) {
   let t = maxT(KINDS.flatMap((k) => state[k] || []));
   if (capClock) t = Math.min(t, Date.now());
   if (t > (hi ? hi.value : 0)) meta.put({ key: 'highestT', value: t });
+  if (localEdit) {
+    const [dirtyRow, gen] = await Promise.all([req(meta.get('dirty')), req(meta.get('mutationGen'))]);
+    const d = dirtyRow ? dirtyRow.value : {};
+    for (const k of KINDS) for (const rec of state[k] || []) for (const doc of toDocs(k, rec)) d[doc.rid] = doc.t;
+    meta.put({ key: 'dirty', value: d });
+    meta.put({ key: 'mutationGen', value: (gen ? gen.value : 0) + 1 });
+  }
   await done(tx);
-  if (changed) emit('merge');
+  if (changed) emit(localEdit ? 'restore' : 'merge');
 }
 
 // Drawings: local blobs, uploaded once, never deleted remotely in v1.
@@ -218,17 +296,18 @@ export async function restore(validated) {
       await done(tx);
     }
   }
-  await mergeIn(add, { capClock: true });
-  await setMeta('mutationGen', (await getMeta('mutationGen', 0)) + 1);
+  await mergeIn(add, { capClock: true, localEdit: true }); // uploads like any other edit
   emit('restore');
   return { books: add.books.length, blocks: add.blocks.length, sessions: add.sessions.length };
 }
 
 export async function status() {
-  const [mutationGen, syncedThroughGen, lastSyncOk] = await Promise.all([
+  const [mutationGen, syncedThroughGen, lastSyncOk, cloud, d, lastCloudOk] = await Promise.all([
     getMeta('mutationGen', 0), getMeta('syncedThroughGen', 0), getMeta('lastSyncOk', null),
+    getMeta('migratedV2', false), getMeta('dirty', {}), getMeta('lastCloudOk', null),
   ]);
-  return { mutationGen, syncedThroughGen, lastSyncOk, pending: mutationGen - syncedThroughGen };
+  const pending = cloud ? Object.keys(d).length : mutationGen - syncedThroughGen;
+  return { mutationGen, syncedThroughGen, lastSyncOk: cloud ? lastCloudOk : lastSyncOk, pending, cloud };
 }
 
 export async function log(op, ok, code = '') {

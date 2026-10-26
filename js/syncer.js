@@ -1,5 +1,6 @@
-// When to sync, and what the status pill should say. The cycle itself lives in sync.js; the public
-// reviews layer (Firebase) rides on the same Google sign-in.
+// When to sync, and what the status pill should say. 2.0: the private diary syncs with the reader
+// account (cloud.js, needs only the persistent Firebase session); Google Drive is used for drawings
+// (and, until a diary has been moved, for the old per-device files in sync.js).
 
 import * as store from './store.js';
 import * as drive from './drive.js';
@@ -7,16 +8,22 @@ import * as fb from './firebase.js';
 import { runSync, withSyncLock, backoffMs } from './sync.js';
 import { drainOutbox } from './social.js';
 import { signOutReady, backupCovers } from './signout.js';
+import { pushDirty, pullChanges, cloudCovers } from './cloud.js';
 import { EXPECTED_EMAIL } from './config.js';
 
 // account: 'off' (no Firebase), 'signed-out', 'needs-handle', 'ready', 'wrong-account'
 export const state = { drive: 'not-configured', email: '', syncing: false, failures: 0, error: '',
-  account: 'off', uid: '', handle: '', admin: false };
+  account: 'off', uid: '', handle: '', admin: false, checked: false, cloudSyncing: false };
 const listeners = new Set();
 let debounce = null, retry = null, drainTimer = null, drainFailures = 0;
+let cloudTimer = null, cloudRetry = null, cloudFailures = 0, pullTimer = null;
+const lock = (name, fn, ifAvailable = false) => (navigator.locks
+  ? navigator.locks.request(name, ifAvailable ? { ifAvailable: true } : {}, (l) => (l ? fn() : { busy: true }))
+  : fn());
 
 export function onStatus(fn) { listeners.add(fn); return () => listeners.delete(fn); }
-const emit = () => listeners.forEach((fn) => fn(state));
+// After sign-out this tab's store is gone; late timers must not touch it (or the screen).
+const emit = () => { if (!stopped || state.signedOut) listeners.forEach((fn) => fn(state)); };
 
 // The diary on this device belongs to one account. Called with every Firebase user we see.
 async function bindAccount(user) {
@@ -32,6 +39,9 @@ async function bindAccount(user) {
   state.handle = (await fb.myHandle(user.uid)) || '';
   state.account = state.handle ? 'ready' : 'needs-handle';
   state.admin = state.handle ? await fb.isAdmin(user.uid) : false;
+  state.checked = true;
+  if (state.handle) await store.setMeta('ownerHandle', state.handle);
+  if (user.email) await store.setMeta('ownerEmail', user.email); // "signed in as", without Drive
   return true;
 }
 
@@ -107,7 +117,9 @@ export async function syncNow({ interactive = false } = {}) {
   emit();
   try {
     const deviceId = await store.getMeta('deviceId');
-    const res = await withSyncLock(navigator.locks, () => runSync({ store, drive: drive.driveApi, deviceId }));
+    const res = (await store.getMeta('migratedV2', false))
+      ? await withSyncLock(navigator.locks, () => catchUpLegacyThenDrawings(deviceId))
+      : await withSyncLock(navigator.locks, () => runSync({ store, drive: drive.driveApi, deviceId }));
     if (res.busy) return;
     state.failures = 0;
     state.error = '';
@@ -128,6 +140,7 @@ export async function syncNow({ interactive = false } = {}) {
     emit();
   }
   drainReviews();
+  cloudSync();
 }
 
 export function scheduleSoon() {
@@ -135,10 +148,126 @@ export function scheduleSoon() {
   debounce = setTimeout(() => syncNow(), 5000);
 }
 
+// A diary moved without a Drive token may still have records that only an old phone wrote to
+// Drive. The first time Drive is connected after the move, merge those files once (the merge marks
+// nothing dirty, so mark what arrived) and let the account upload pick them up.
+async function catchUpLegacyThenDrawings(deviceId) {
+  if (!(await store.getMeta('legacyDriveMerged', false))) {
+    const before = new Set((await store.allDocs()).map((d) => `${d.rid}@${d.t}@${d.d}`));
+    await runSync({ store, drive: drive.driveApi, deviceId });
+    const arrived = (await store.allDocs()).filter((d) => !before.has(`${d.rid}@${d.t}@${d.d}`));
+    if (arrived.length) {
+      await store.markDirtyDocs(arrived);
+      scheduleCloud(1000);
+    }
+    await store.setMeta('legacyDriveMerged', true);
+  }
+  return uploadDrawings();
+}
+
+// Drawings live in the owner's Drive; upload any that aren't there yet (needs a Drive token).
+async function uploadDrawings() {
+  for (const d of await store.pendingDrawings()) {
+    await drive.driveApi.ensureDrawing(`drawing-${d.id}.webp`, d.blob);
+    await store.markDrawingUploaded(d.id);
+  }
+  return { ok: true, notes: ['drawings'] };
+}
+
+// ----- private diary in the reader account (2.0) -----
+
+const local = {
+  dirty: () => store.dirty(),
+  docFor: (rid) => store.docFor(rid),
+  ack: (rid, t) => store.dirtyAck(rid, t),
+  mergeRemote: (docs) => store.mergeRemoteDocs(docs),
+  getCursor: () => store.getMeta('cloudCursor', 0),
+  setCursor: (v) => store.setMeta('cloudCursor', v),
+};
+// Only once Firebase has confirmed the session (state.checked) - the remembered uid alone isn't auth.
+const canCloud = () => !stopped && fb.isConfigured() && state.checked && !!state.uid
+  && (state.account === 'ready' || state.account === 'needs-handle') && navigator.onLine;
+
+// One-time, resumable move of a diary into the account: pick up Drive data from other phones if a
+// Drive token happens to be available, queue every record, upload, then prove every record arrived
+// before switching the diary to cloud mode. Until then 1.x Drive sync keeps running as before.
+async function migrate() {
+  if (drive.hasToken()) {
+    const deviceId = await store.getMeta('deviceId');
+    const merged = await withSyncLock(navigator.locks, () => runSync({ store, drive: drive.driveApi, deviceId })).catch(() => null);
+    if (merged?.ok) await store.setMeta('legacyDriveMerged', true);
+  }
+  if (!(await store.getMeta('migrationQueued', false))) {
+    await store.markAllDirty();
+    await store.setMeta('migrationQueued', true);
+  }
+  const api = fb.recordsApi(state.uid);
+  const pushed = await pushDirty({ store: local, api });
+  state.stuck = pushed.skipped;
+  // Records still dirty now are either brand-new edits (they upload normally in cloud mode) or
+  // ones the account refused (they stay safe on this phone and the pill says so). Neither should
+  // hold up the move, so the proof covers everything that isn't dirty.
+  const stillDirty = new Set(Object.keys(await store.dirty()));
+  const remote = new Map();
+  let after = null, newest = 0;
+  for (;;) {
+    const { docs, last } = await api.page(0, after);
+    for (const d of docs) { remote.set(d.rid, d); if (d.uMs > newest) newest = d.uMs; }
+    if (docs.length) await store.mergeRemoteDocs(docs); // another phone's diary arrives here too
+    if (!last || docs.length < api.pageSize) break;
+    after = last;
+  }
+  const gap = cloudCovers((await store.allDocs()).filter((d) => !stillDirty.has(d.rid)), remote);
+  if (gap) { await store.log('move-to-account', false, gap); return false; }
+  await store.setMeta('cloudCursor', newest);
+  await store.setMeta('verifiedT', await store.getMeta('highestT', 0));
+  await store.setMeta('migratedV2', true);
+  await store.log('move-to-account', true, `${remote.size} records`);
+  return true;
+}
+
+export async function cloudSync({ pull = true, wait = false } = {}) {
+  clearTimeout(cloudTimer);
+  clearTimeout(cloudRetry);
+  if (!canCloud()) return;
+  state.cloudSyncing = true;
+  emit();
+  try {
+    const res = await lock('rd-cloud', async () => {
+      if (!(await store.getMeta('migratedV2', false))) return migrate();
+      const api = fb.recordsApi(state.uid);
+      const pushed = await pushDirty({ store: local, api });
+      state.stuck = pushed.skipped; // refused by the account: shown in the pill, kept on the phone
+      if (pushed.skipped) await store.log('account-sync', false, `${pushed.skipped} change(s) refused`);
+      if (pull) await pullChanges({ store: local, api });
+      await store.setMeta('lastCloudOk', Date.now());
+      return true;
+    }, !wait);
+    if (res?.busy) { cloudTimer = setTimeout(() => cloudSync({ pull }), 3000); return; }
+    cloudFailures = 0;
+    if (Object.keys(await store.dirty()).length && (await store.getMeta('migratedV2', false))) scheduleCloud();
+  } catch (e) {
+    if (stopped) return;
+    cloudFailures++;
+    await store.log('account-sync', false, e.code || e.message);
+    cloudRetry = setTimeout(() => cloudSync(), backoffMs(cloudFailures));
+  } finally {
+    state.cloudSyncing = false;
+    emit();
+  }
+}
+
+// Edits are saved in batches: at most one upload every 30 seconds while writing.
+export function scheduleCloud(ms = 30000) {
+  if (cloudTimer) return;
+  cloudTimer = setTimeout(() => { cloudTimer = null; cloudSync({ pull: false }); }, ms);
+}
+
 // ----- public reviews -----
 
 export async function claimHandle(handle) {
   await fb.claimHandle(state.uid, handle);
+  await store.setMeta('ownerHandle', handle);
   state.handle = handle;
   state.account = 'ready';
   emit();
@@ -148,7 +277,8 @@ export async function claimHandle(handle) {
 export async function drainReviews() {
   if (stopped) return;
   clearTimeout(drainTimer);
-  if (state.account !== 'ready' || !navigator.onLine) return;
+  // Only after Firebase confirmed the session; the remembered "ready" alone isn't auth.
+  if (state.account !== 'ready' || !state.checked || !navigator.onLine) return;
   const entries = await store.getMeta('reviewOutbox', {});
   if (!Object.keys(entries).length) return;
   const { uid, handle } = state;
@@ -202,6 +332,7 @@ let stopped = false;
 function stopAll() {
   stopped = true;
   clearTimeout(debounce); clearTimeout(retry); clearTimeout(drainTimer);
+  clearTimeout(cloudTimer); clearTimeout(cloudRetry); clearInterval(pullTimer);
   drive.forget();
 }
 
@@ -210,6 +341,8 @@ function stopAll() {
 export async function signOut(say = () => {}) {
   const fail = (msg) => { throw new Error(msg); };
   if (!navigator.onLine) fail(signOutReady({ online: false }));
+
+  if (await store.getMeta('migratedV2', false)) return signOutCloud(say, fail);
 
   say('Connecting to your Google Drive…');
   if (!(await ensureConnected(true))) {
@@ -264,6 +397,55 @@ export async function signOut(say = () => {}) {
   }
 }
 
+async function signOutCloud(say, fail) {
+  const user = await fb.currentUser();
+  if (!user || user.uid !== (await store.getMeta('ownerUid', ''))) fail('Sign in to your reader account first, then try again.');
+  say('Saving everything to your account…');
+  await cloudSync({ pull: false, wait: true });
+  if (Object.keys(await store.dirty()).length) fail('Some changes aren\'t saved to your account yet. Check your internet and try again.');
+  const genAtProof = (await store.status()).mutationGen;
+
+  say('Checking the backup…');
+  const verifiedT = await store.getMeta('verifiedT', 0);
+  const changed = (await store.allDocs()).filter((d) => d.t > verifiedT);
+  const api = fb.recordsApi(user.uid);
+  const remote = new Map();
+  for (const d of changed) { const r = await api.getOne(d.rid).catch(() => null); if (r) remote.set(d.rid, r); }
+  const gap = cloudCovers(changed, remote);
+  if (gap) fail(`Your account copy isn't complete yet (${gap}). Try again in a moment.`);
+
+  const drawings = (await store.list('blocks')).filter((b) => b.drawingId);
+  if (drawings.length) {
+    say('Checking your drawings in Google Drive…');
+    if (!(await ensureConnected(true))) fail('Connect Google Drive so your drawings are backed up, then try again.');
+    await uploadDrawings();
+    const names = await drive.driveApi.listDrawingNames().catch((e) => fail(`Couldn't check drawings in Drive (${e.message}). Try again.`));
+    for (const b of drawings) {
+      if (!names.has(`drawing-${b.drawingId}.webp`)) fail('A drawing is missing from Drive. Try again in a moment.');
+      const mine = await store.getDrawing(b.drawingId);
+      const back = await drive.driveApi.downloadDrawing(b.drawingId).catch(() => null);
+      if (!back || (mine && back.size !== mine.blob.size)) fail('A drawing in Drive doesn\'t match this phone. Try again in a moment.');
+    }
+  }
+  // Last look right before wiping: any edit since the proof started (even one with its dirty mark
+  // already cleared by a racing upload) stops the wipe.
+  if (Object.keys(await store.dirty()).length || (await store.status()).mutationGen !== genAtProof) fail('Something changed while checking. Try again.');
+  await store.setMeta('verifiedT', await store.getMeta('highestT', 0));
+
+  say('Signing out…');
+  channel?.postMessage('signing-out');
+  stopAll();
+  await fb.signOut();
+  if (await fb.currentUser()) fail('Couldn\'t sign out of the reader account. Try again.');
+  try { await store.wipe(); } catch (e) {
+    const err = new Error(e.message === 'blocked'
+      ? 'Your diary is safely in your account. Reading Diary is still open in another tab: close it, then reload to finish signing out.'
+      : `Your diary is safely in your account, but this phone couldn't be cleared (${e.message}). Reload and try again.`);
+    err.reload = true;
+    throw err;
+  }
+}
+
 export function start() {
   channel?.addEventListener('message', (e) => {
     if (e.data !== 'signing-out') return;
@@ -272,23 +454,38 @@ export function start() {
     state.signedOut = true;
     emit();
   });
-  store.onChange((why) => {
+  store.onChange(async (why) => {
     if (why === 'outbox') { clearTimeout(drainTimer); drainTimer = setTimeout(drainReviews, 1500); }
-    else if (why !== 'merge') scheduleSoon();
+    else if (why !== 'merge') {
+      if (await store.getMeta('migratedV2', false)) {
+        scheduleCloud();
+        if ((await store.pendingDrawings()).length && drive.hasToken()) scheduleSoon();
+      } else scheduleSoon();
+    }
     emit();
   });
-  window.addEventListener('online', () => syncNow());
+  window.addEventListener('online', () => { cloudSync(); syncNow(); });
   document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'hidden' && state.drive === 'connected' && (await store.status()).pending > 0) syncNow();
-    if (document.visibilityState === 'visible') syncNow();
+    if (document.visibilityState === 'hidden') {
+      cloudSync({ pull: false }); // save now, don't wait for the 30 s batch
+      if (state.drive === 'connected' && (await store.status()).pending > 0) syncNow();
+    }
+    if (document.visibilityState === 'visible') { cloudSync(); syncNow(); }
   });
+  // While the app is open, pick up changes from your other phones every 5 minutes.
+  pullTimer = setInterval(() => { if (document.visibilityState === 'visible') cloudSync(); }, 5 * 60 * 1000);
   if (fb.isConfigured()) {
     state.account = 'signed-out';
-    // Firebase remembers its own session, so reviews work even before Drive gets a fresh token.
-    // Only fetch the SDK if this diary has signed in before.
-    store.getMeta('ownerUid', '').then((owner) => owner && fb.currentUser())
-      .then(async (user) => { if (user && (await bindAccount(user))) { emit(); drainReviews(); } else emit(); })
-      .catch(() => {});
+    // Show who you are immediately from what this phone remembers; Firebase only refines it.
+    // (The old flash of "Sign in" came from waiting for Firebase before drawing anything.)
+    Promise.all([store.getMeta('ownerUid', ''), store.getMeta('ownerHandle', '')]).then(([owner, handle]) => {
+      if (owner) { state.uid = owner; state.handle = handle; state.account = handle ? 'ready' : 'checking'; emit(); }
+      return owner && fb.currentUser();
+    }).then(async (user) => {
+      state.checked = true;
+      if (user && (await bindAccount(user))) { emit(); drainReviews(); cloudSync(); }
+      else { if (state.account !== 'wrong-account') { state.account = 'signed-out'; state.uid = ''; } emit(); }
+    }).catch(() => { state.checked = true; emit(); });
   }
   if (drive.isConfigured()) syncNow();
   emit();

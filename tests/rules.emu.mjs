@@ -178,12 +178,15 @@ test('listing a book\'s reviews needs a limit of at most 50', async () => {
   await assertFails(getDocs(col));
 });
 
-test('collection-group queries across all books are refused', async () => {
+// 2.0: Explore reads the latest reviews across books, in pages of at most 30.
+test('collection-group review queries: pages of 30 allowed, bigger refused, signed-out refused', async () => {
   await seedUser('alice', 'alice_reads');
   await seedReview('alice', 'alice_reads');
   await seedReview('alice', 'alice_reads', 'OL777W');
-  await assertFails(getDocs(query(collectionGroup(db('bob'), 'reviews'), limit(50))));
-  await assertFails(getDocs(query(collectionGroup(db('alice'), 'reviews'), where('uid', '==', 'alice'), limit(50))));
+  await assertSucceeds(getDocs(query(collectionGroup(db('bob'), 'reviews'), limit(30))));
+  await assertFails(getDocs(query(collectionGroup(db('bob'), 'reviews'), limit(31))));
+  await assertFails(getDocs(query(collectionGroup(db('bob'), 'reviews'))));
+  await assertFails(getDocs(query(collectionGroup(db(null), 'reviews'), limit(10))));
 });
 
 // ---------- reports + admins ----------

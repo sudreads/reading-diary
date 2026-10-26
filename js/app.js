@@ -5,13 +5,13 @@ import { streak, readingDates, lessonOfDay, localDate, addDays } from './derive.
 import { validateBackup } from './validate.js';
 import { searchBooks } from './openlibrary.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
-import { isConfigured } from './drive.js';
+import { isConfigured, hasToken as hasDriveToken } from './drive.js';
 import { isConfigured as fbConfigured } from './firebase.js';
 import { workIdOf } from './social.js';
 import { dedupePlan } from './dedupe.js';
 import { reviewsSheet, handleSheet, adminPanel } from './reviews.js';
 
-const VERSION = '1.4.1';
+const VERSION = '2.0.0-a';
 const TABS = [
   { id: 'now', label: 'Now', icon: '📖' },
   { id: 'journal', label: 'Notebook', icon: '📓' },
@@ -465,6 +465,7 @@ function settingsScreen() {
     const st = await store.status();
     const persisted = (await navigator.storage?.persisted?.()) ?? false;
     const logEntries = await store.getMeta('syncLog', []);
+    const drawingsWaiting = (await store.pendingDrawings()).length;
     const ds = syncer.state;
     const fileIn = h('input', { type: 'file', accept: 'application/json,.json', class: 'hidden-input', onchange: (e) => restoreFrom(e.target.files[0]) });
 
@@ -473,6 +474,14 @@ function settingsScreen() {
       fbConfigured() && accountCard(ds, await store.getMeta('deleteJob', false),
         { uid: await store.getMeta('ownerUid', ''), email: await store.getMeta('ownerEmail', '') }),
       fbConfigured() && ds.admin && adminPanel(),
+      st.cloud ? h('div', { class: 'card' },
+        h('h2', null, 'Where your diary is saved'),
+        h('p', { class: 'small' }, st.pending ? `${st.pending} change${st.pending === 1 ? '' : 's'} waiting to save to your account.` : `Saved to your reader account · ${ago(st.lastSyncOk)}. Nothing to do: it saves by itself.`),
+        h('p', { class: 'muted small' }, drawingsWaiting
+          ? `${drawingsWaiting} drawing${drawingsWaiting === 1 ? '' : 's'} not backed up yet. Drawings are kept in your own Google Drive.`
+          : 'Drawings are kept in your own Google Drive.'),
+        drawingsWaiting > 0 && h('div', { class: 'actions' },
+          h('button', { class: 'btn primary', onclick: () => syncer.syncNow({ interactive: true }).then(render) }, 'Back up drawings'))) :
       h('div', { class: 'card' },
         h('h2', null, 'Google Drive backup'),
         !isConfigured() ? h('p', null, 'Not set up yet. Everything is saved on this phone; use "Download backup" until Drive is connected.') :
@@ -539,6 +548,8 @@ function accountCard(ds, deleteUnfinished, owner) {
     body = [h('p', null, 'Pick your reader name to share reviews.'), h('button', { class: 'btn primary', onclick: () => handleSheet(render) }, 'Pick a name')];
   } else if (ds.account === 'wrong-account') {
     body = [h('p', null, 'This diary belongs to a different Google account. Sign in with that one to back up and share reviews.')];
+  } else if (owner.uid && (!ds.checked || ds.account === 'checking')) {
+    body = [h('p', { class: 'muted small' }, 'Connecting to your account…')]; // never a fake "Sign in"
   } else {
     body = [h('p', null, 'Sign in with Google to back up your diary and share reviews with other readers.'),
       h('button', { class: 'btn primary', onclick: () => syncer.syncNow({ interactive: true }).then(render) }, 'Sign in with Google')];
@@ -551,7 +562,7 @@ function signOutSheet() {
   const out = h('div', { class: 'form' });
   const go = h('button', { class: 'btn primary', onclick: run }, 'Sign out');
   out.append(
-    h('p', null, 'Everything in this diary is saved to your Google Drive first. Then this phone is cleared so someone else can sign in. Sign back in any time to get it all back.'),
+    h('p', null, 'Everything in this diary is saved to your account first (drawings to your Google Drive). Then this phone is cleared so someone else can sign in. Sign back in any time to get it all back.'),
     steps, go);
   const close = sheet('Sign out', out);
   async function run() {
@@ -641,6 +652,21 @@ async function renderPill() {
   const st = await store.status();
   const ds = syncer.state;
   let cls = 'grey', text = 'Saved on this phone · Drive not set up';
+  if (st.cloud) {
+    // 2.0: the diary saves to the reader account by itself. Drive only matters for drawings.
+    const n = st.pending;
+    const drawings = (await store.pendingDrawings()).length;
+    if (ds.account === 'wrong-account') { cls = 'red'; text = 'Different Google account - tap for details'; }
+    else if (n && !navigator.onLine) { cls = 'amber'; text = `${n} change${n === 1 ? '' : 's'} on this phone · will save when online`; }
+    else if (ds.stuck) { cls = 'red'; text = `${ds.stuck} change${ds.stuck === 1 ? '' : 's'} couldn't be saved · kept on this phone`; }
+    else if (n || ds.cloudSyncing) { cls = 'amber'; text = 'Saving…'; }
+    else if (drawings && !hasDriveToken()) { cls = 'amber'; text = `Back up ${drawings} drawing${drawings === 1 ? '' : 's'} · tap`; }
+    else { cls = 'green'; text = st.lastSyncOk ? `Saved · ${ago(st.lastSyncOk)}` : 'Saved'; }
+    pill.className = `pill ${cls}`;
+    pill.textContent = text;
+    pill.dataset.action = drawings && !hasDriveToken() ? 'drawings' : '';
+    return;
+  }
   if (isConfigured()) {
     if (ds.drive === 'wrong-account' || ds.account === 'wrong-account') { cls = 'red'; text = 'Different Google account - tap for details'; }
     else if (ds.drive === 'needs-confirm') { cls = 'amber'; text = `Back up to ${ds.email}? Tap to confirm`; }
@@ -662,9 +688,10 @@ async function renderPill() {
 function setupShell() {
   const nav = document.querySelector('.tabbar');
   nav.replaceChildren(...TABS.map((t) => h('button', { 'data-tab': t.id, onclick: () => go(t.id) }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, t.icon), h('span', null, t.label))));
-  document.getElementById('pill').addEventListener('click', () => {
+  document.getElementById('pill').addEventListener('click', async (e) => {
     const d = syncer.state.drive;
-    if (d === 'disconnected' || d === 'signed-out') syncer.syncNow({ interactive: true });
+    if (e.currentTarget.dataset.action === 'drawings') { await syncer.syncNow({ interactive: true }); renderPill(); return; }
+    if (!(await store.getMeta('migratedV2', false)) && (d === 'disconnected' || d === 'signed-out')) syncer.syncNow({ interactive: true });
     else go('settings');
   });
   setInterval(renderPill, 30000);
@@ -672,6 +699,7 @@ function setupShell() {
 
 function setupServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
+  if (new URLSearchParams(location.search).has('emu')) return; // emulator testing: always fresh files
   let updating = false;
   navigator.serviceWorker.register('sw.js').then((reg) => {
     const offer = (w) => {
@@ -740,8 +768,11 @@ async function boot() {
     else if (!busy.current()) render(); // a new day: "Not yet" resets, streak updates
   });
   window.addEventListener('pagehide', () => { flushNotebook(); });
-  let askedHandle = false;
+  let askedHandle = false, lastAccount = '';
   syncer.onStatus((s) => {
+    // Settings shows who you are: redraw it when the account check settles (not on every tick).
+    const acct = `${s.account}|${s.handle}|${s.checked}`;
+    if (acct !== lastAccount) { lastAccount = acct; if (ui.tab === 'settings') { pendingRender = true; maybeRender(); } }
     if (s.signedOut) { // another tab signed out: this one's diary is gone
       document.body.classList.add('gated');
       clear(main()).append(h('div', { class: 'gate' }, h('h1', null, 'Signed out'), h('p', null, 'You signed out in another tab.'),

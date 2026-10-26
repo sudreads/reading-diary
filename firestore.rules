@@ -1,17 +1,34 @@
 rules_version = '2';
 
-// Reading Diary public layer. Contract: PLAN-v1.2.md section 4. Every path is tested allow AND
-// deny in tests/rules.emu.mjs against the emulator before these are deployed.
+// Reading Diary 2.0. Contract: PLAN-v1.2.md section 4 + PLAN-v2.md (incl. its Codex revisions).
+// Every path is tested allow AND deny in tests/rules.emu.mjs against the emulator before deploy.
+// Scope: confidentiality and integrity against a hostile signed-in member. Availability (spam /
+// quota exhaustion by an invited member) is out of scope for the invite-only beta - see PLAN-v2.
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
     function me() { return request.auth.uid; }
+    // Full path from a string with slashes ($(...) would insert it as one segment).
+    function doc(p) { return path('/databases/' + database + '/documents/' + p); }
     function isAdmin() { return signedIn() && exists(/databases/$(database)/documents/admins/$(me())); }
     function exact(d, keys) { return d.keys().hasAll(keys) && d.keys().hasOnly(keys); }
+    function str(v, max) { return v is string && v.size() <= max; }
     function validHandle(h) { return h is string && h.matches('^[a-z0-9_]{3,20}$'); }
     function validWorkId(w) { return w is string && w.matches('^OL[0-9]{1,12}W$'); }
     function validUid(u) { return u is string && u.matches('^[A-Za-z0-9]{1,128}$'); }
+    function validId(i) { return i is string && i.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'); }
+    // Canonical book keys: isbn13, Google Books volume, Open Library work, community uuid.
+    function validBookKey(k) {
+      return k is string && k.matches('^(isbn:97[89][0-9]{10}|gb:[A-Za-z0-9_-]{6,24}|ol:OL[0-9]{1,12}W|c:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$');
+    }
+    function validCover(u) {
+      return u == '' || (u is string && u.size() <= 500
+        && u.matches('^https://(books[.]google[.]com|books[.]googleusercontent[.]com|covers[.]openlibrary[.]org)/.*'));
+    }
+    function myHandle() { return get(doc('users/' + me())).data.handle; }
+
+    // ---------- accounts ----------
 
     // One per account, forever: the permanent sentinel that stops a uid claiming a second handle.
     match /users/{uid} {
@@ -20,58 +37,200 @@ service cloud.firestore {
         && exact(request.resource.data, ['handle', 'createdAt'])
         && validHandle(request.resource.data.handle)
         && request.resource.data.createdAt == request.time
-        && getAfter(/databases/$(database)/documents/handles/$(request.resource.data.handle)).data.uid == me();
+        && getAfter(doc('handles/' + request.resource.data.handle)).data.uid == me();
+
+      // The private diary: one document per record, owner only. Never physically deleted (a
+      // tombstone with a newer revision), so an old offline phone can't recreate a removed record.
+      // A write must carry a strictly newer revision (t, d) than the stored one.
+      match /records/{rid} {
+        function validRec(d) {
+          return exact(d, ['kind', 'id', 'data', 't', 'd', 'deleted', 'u'])
+            && d.kind in ['books', 'blocks', 'sessions', 'rank']
+            && validId(d.id) && rid == d.kind + '_' + d.id
+            && d.t is int && d.t > 0 && str(d.d, 64) && d.deleted is bool
+            && d.data is map && d.data.keys().size() <= 25
+            && (!('text' in d.data) || str(d.data.text, 20000))
+            && (!('comment' in d.data) || str(d.data.comment, 20000))
+            && (!('title' in d.data) || str(d.data.title, 500))
+            && (!('author' in d.data) || str(d.data.author, 500))
+            && d.u == request.time;
+        }
+        function newer(n, o) { return n.t > o.t || (n.t == o.t && n.d > o.d); }
+        allow get, list: if signedIn() && uid == me();
+        allow create: if signedIn() && uid == me() && validRec(request.resource.data);
+        allow update: if signedIn() && uid == me() && validRec(request.resource.data)
+          && request.resource.data.kind == resource.data.kind
+          && request.resource.data.id == resource.data.id
+          && newer(request.resource.data, resource.data);
+        allow delete: if false;
+      }
     }
 
-    // Claimed together with users/{uid} in one batch; never updated or released.
+    // Claimed together with users/{uid} in one batch; never updated or released. Handles are
+    // member-visible identifiers (exact lookup), documented in privacy.html.
     match /handles/{h} {
       allow get: if signedIn();
       allow create: if signedIn() && validHandle(h)
         && exact(request.resource.data, ['uid', 'createdAt'])
         && request.resource.data.uid == me()
         && request.resource.data.createdAt == request.time
-        && !exists(/databases/$(database)/documents/users/$(me()))
-        && getAfter(/databases/$(database)/documents/users/$(me())).data.handle == h;
+        && !exists(doc('users/' + me()))
+        && getAfter(doc('users/' + me())).data.handle == h;
     }
 
+    match /admins/{uid} {
+      allow get: if signedIn() && uid == me();
+    }
+
+    // ---------- catalog ----------
+
+    // Existence + display hints only; immutable; never trusted for identity (external keys render
+    // from a live Google Books / Open Library fetch). Community books (c:) render from here.
+    match /catalog/{key} {
+      allow get: if signedIn();
+      allow list: if signedIn() && request.query.limit <= 20;
+      allow create: if signedIn() && validBookKey(key)
+        && exact(request.resource.data, ['key', 'title', 'titleLower', 'author', 'isbn13', 'pages', 'coverUrl', 'createdBy', 'createdAt'])
+        && request.resource.data.key == key
+        && str(request.resource.data.title, 300) && request.resource.data.title.size() > 0
+        && request.resource.data.titleLower == request.resource.data.title.lower()
+        && str(request.resource.data.author, 300)
+        && (request.resource.data.isbn13 == '' || (request.resource.data.isbn13 is string && request.resource.data.isbn13.matches('^97[89][0-9]{10}$')))
+        && request.resource.data.pages is int && request.resource.data.pages >= 0 && request.resource.data.pages <= 100000
+        && validCover(request.resource.data.coverUrl)
+        && request.resource.data.createdBy == me()
+        && request.resource.data.createdAt == request.time;
+      allow delete: if isAdmin();
+    }
+
+    // ---------- reviews ----------
+
+    function validReviewBody(d) {
+      return d.rating is int && d.rating >= 1 && d.rating <= 5
+        && str(d.text, 2000)
+        && d.updatedAt == request.time;
+    }
+
+    // 2.0 canonical path. Display hints let feeds render without extra lookups.
+    match /books/{key}/reviews/{uid} {
+      allow get: if signedIn();
+      allow list: if signedIn() && request.query.limit <= 50;
+      allow create: if signedIn() && uid == me() && validBookKey(key)
+        && exists(doc('catalog/' + key))
+        && exact(request.resource.data, ['bookKey', 'uid', 'handle', 'rating', 'text', 'title', 'author', 'coverUrl', 'createdAt', 'updatedAt'])
+        && request.resource.data.bookKey == key
+        && request.resource.data.uid == me()
+        && request.resource.data.handle == myHandle()
+        && str(request.resource.data.title, 300) && str(request.resource.data.author, 300)
+        && validCover(request.resource.data.coverUrl)
+        && request.resource.data.createdAt == request.time
+        && validReviewBody(request.resource.data);
+      // One edit per review every 10 seconds.
+      allow update: if signedIn() && uid == me()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating', 'text', 'updatedAt'])
+        && validReviewBody(request.resource.data)
+        && request.time > resource.data.updatedAt + duration.value(10, 's');
+      allow delete: if signedIn() && (uid == me() || isAdmin());
+    }
+
+    // 1.x path: still readable, editable and deletable by its owner; new reviews go to books/.
     match /works/{workId}/reviews/{uid} {
-      function validBody(d) {
-        return d.rating is int && d.rating >= 1 && d.rating <= 5
-          && d.text is string && d.text.size() <= 2000
-          && d.updatedAt == request.time;
-      }
       allow get: if signedIn();
       allow list: if signedIn() && request.query.limit <= 50;
       allow create: if signedIn() && uid == me() && validWorkId(workId)
         && exact(request.resource.data, ['workId', 'uid', 'handle', 'rating', 'text', 'createdAt', 'updatedAt'])
         && request.resource.data.workId == workId
         && request.resource.data.uid == me()
-        && request.resource.data.handle == get(/databases/$(database)/documents/users/$(me())).data.handle
+        && request.resource.data.handle == myHandle()
         && request.resource.data.createdAt == request.time
-        && validBody(request.resource.data);
-      // Throttle: one edit per review every 10 seconds, so a script can't hammer the database.
+        && validReviewBody(request.resource.data);
       allow update: if signedIn() && uid == me()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating', 'text', 'updatedAt'])
-        && validBody(request.resource.data)
+        && validReviewBody(request.resource.data)
         && request.time > resource.data.updatedAt + duration.value(10, 's');
       allow delete: if signedIn() && (uid == me() || isAdmin());
     }
 
+    // Explore "latest reviews" and trending: collection-group reads, small pages only.
+    match /{path=**}/reviews/{uid} {
+      allow list: if signedIn() && request.query.limit <= 30;
+    }
+
     match /reports/{id} {
+      // workId holds a 1.x Open Library id or a 2.0 book key; the target review must exist.
       allow create: if signedIn()
         && exact(request.resource.data, ['workId', 'reviewerUid', 'uid', 'reason', 'createdAt'])
-        && validWorkId(request.resource.data.workId)
+        && (validWorkId(request.resource.data.workId) || validBookKey(request.resource.data.workId))
         && validUid(request.resource.data.reviewerUid)
         && request.resource.data.uid == me()
         && id == request.resource.data.workId + '_' + request.resource.data.reviewerUid + '_' + me()
         && request.resource.data.reason in ['spam', 'mean', 'spoiler', 'other']
         && request.resource.data.createdAt == request.time
-        && exists(/databases/$(database)/documents/works/$(request.resource.data.workId)/reviews/$(request.resource.data.reviewerUid));
+        && (exists(doc('works/' + request.resource.data.workId + '/reviews/' + request.resource.data.reviewerUid))
+          || exists(doc('books/' + request.resource.data.workId + '/reviews/' + request.resource.data.reviewerUid)));
       allow get, list, delete: if signedIn() && (isAdmin() || resource.data.uid == me());
     }
 
-    match /admins/{uid} {
-      allow get: if signedIn() && uid == me();
+    // ---------- friends ----------
+
+    function friends(a, b) {
+      return exists(doc('friends/' + a + '/list/' + b)) && exists(doc('friends/' + b + '/list/' + a));
+    }
+    function pendingFrom(x) { // a request from x to me exists now and is deleted by this batch
+      return exists(doc('friendRequests/' + x + '_' + me())) && !existsAfter(doc('friendRequests/' + x + '_' + me()));
+    }
+
+    match /friendRequests/{rid} {
+      allow create: if signedIn()
+        && exact(request.resource.data, ['from', 'to', 'fromHandle', 'toHandle', 'createdAt'])
+        && request.resource.data.from == me()
+        && validUid(request.resource.data.to) && request.resource.data.to != me()
+        && rid == me() + '_' + request.resource.data.to
+        && request.resource.data.fromHandle == myHandle()
+        && validHandle(request.resource.data.toHandle)
+        && get(doc('handles/' + request.resource.data.toHandle)).data.uid == request.resource.data.to
+        && !exists(doc('friends/' + me() + '/list/' + request.resource.data.to))
+        && request.resource.data.createdAt == request.time;
+      allow get, list: if signedIn() && (resource.data.from == me() || resource.data.to == me());
+      // decline or accept: only the receiver; cancel: only the sender. Never updated.
+      allow delete: if signedIn() && (resource.data.to == me() || resource.data.from == me());
+    }
+
+    // Friendship = two edges, created together by the accepter (consuming the request) and
+    // removed together by either friend.
+    match /friends/{owner}/list/{other} {
+      function validEdge(d) {
+        return exact(d, ['handle', 'since'])
+          && d.handle == get(doc('users/' + other)).data.handle
+          && d.since == request.time;
+      }
+      function bothAfter() {
+        return existsAfter(doc('friends/' + owner + '/list/' + other)) && existsAfter(doc('friends/' + other + '/list/' + owner));
+      }
+      allow get, list: if signedIn() && owner == me();
+      allow create: if signedIn() && validEdge(request.resource.data) && bothAfter()
+        && ((owner == me() && pendingFrom(other)) || (other == me() && pendingFrom(owner)));
+      allow delete: if signedIn() && (owner == me() || other == me())
+        && !existsAfter(doc('friends/' + other + '/list/' + owner));
+    }
+
+    // What friends see of you. Never notebook or comments.
+    match /activity/{uid} {
+      function validBook(b, ratingAllowed) {
+        return b == null || (b is map
+          && (ratingAllowed ? exact(b, ['key', 'title', 'coverUrl', 'rating']) && b.rating is int && b.rating >= 0 && b.rating <= 5
+                            : exact(b, ['key', 'title', 'coverUrl']))
+          && str(b.key, 80) && str(b.title, 300) && validCover(b.coverUrl));
+      }
+      allow get: if signedIn() && (uid == me() || friends(uid, me()));
+      allow create, update: if signedIn() && uid == me()
+        && exact(request.resource.data, ['handle', 'currentBook', 'streak', 'finishedCount', 'lastFinished', 'updatedAt'])
+        && request.resource.data.handle == myHandle()
+        && validBook(request.resource.data.currentBook, false)
+        && validBook(request.resource.data.lastFinished, true)
+        && request.resource.data.streak is int && request.resource.data.streak >= 0 && request.resource.data.streak <= 100000
+        && request.resource.data.finishedCount is int && request.resource.data.finishedCount >= 0 && request.resource.data.finishedCount <= 100000
+        && request.resource.data.updatedAt == request.time;
     }
   }
 }

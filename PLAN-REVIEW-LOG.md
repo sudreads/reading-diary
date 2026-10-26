@@ -440,3 +440,118 @@ Accepted most; see "Revisions after Codex round 1" in PLAN-v1.4.md. Rejected a f
 VERDICT: REVISE
 ### Claude's response (round 2)
 Accepted all four, folded into the build: stale tabs go dead on the broadcast (store refuses every operation, syncer stops, Drive token dropped) and the deleted database is the durable barrier - any reopen starts empty behind the sign-in gate; backup proof uses the full merge rule (merging the local record into the remote one must change nothing, rev and rankRev); every live drawing is downloaded back and its byte size compared with the local blob; the two-account handoff is tested on Yanai's phone with his second account (cannot be automated here). Round 3 skipped: the remaining points are concrete and get checked by the post-build review.
+
+# v2.0 plan review (MAX_ROUNDS=3)
+
+## Round 1 - Codex
+- The proposed `t > lastPulledT` cursor loses updates from clock-skewed devices and ties at the same `t`; fix: cursor on a server `updatedAt` plus document ID, or periodically fully reconcile the owner’s small record set.
+
+- Concurrent offline writes can overwrite each other in Firestore before the client merge ever sees both versions, including independently merged `rankRev`; fix: use per-record transactions that read, merge, and retry, or store independently mergeable fields/append-only mutations.
+
+- A failed record in a `writeBatch` rejects every unrelated dirty record in that batch; fix: partition batches and retry conflicted records individually after pulling and merging the remote version.
+
+- “Batch every 30 seconds” is not a write cap: a hostile client can submit 400 writes per batch or unlimited batches directly; fix: explicitly drop the claim that client-only Spark rules resist authenticated quota DoS, or add a trusted rate-limiting backend.
+
+- The same quota-exhaustion hole exists for unlimited `c:<uuid>` catalog creations, arbitrary reviews, reports, requests, and record IDs; fix: require a backend/moderation queue for public writes or tightly constrain creation to fixed, server-issued slots.
+
+- Firestore rules cannot count pending requests or friends, so both stated limits are merely advisory; fix: enforce quotas through transactionally updated per-user counters/slot documents, or remove the “max” guarantee.
+
+- A request rule that only checks that `handles/{h}` exists allows sender-handle impersonation and requests addressed to an unrelated UID; fix: require `fromHandle == users/{from}.handle` and `handles/{h}.uid == to`.
+
+- `getAfter()` cannot read a request that is deleted in the same batch, so the described acceptance predicate is wrong; fix: validate the pre-existing request with `get()`, validate its deletion with `!existsAfter()`, and validate both friendship edges with `existsAfter()`.
+
+- Allowing either party to delete only its own friendship edge leaves one-directional access until “next open”; fix: require reciprocal edges for activity reads and require deletion of both edges atomically.
+
+- A friends-activity collection query can exceed Firestore Rules’ document-access-call limit because each activity result performs a different friendship `exists()` lookup; fix: fetch known friends’ activity by direct IDs in bounded chunks, or redesign the feed with trusted fan-out.
+
+- Fetching activity for 200 friends and refreshing it frequently is itself an easy 50k-read/day trap; fix: hard-cap displayed friends, cache activity aggressively, and make refresh explicit or infrequent.
+
+- The existing review schema only supports `works/{OL-id}/reviews`; ISBN/Google/community book pages have no specified review path or equivalent rules; fix: define one canonical review path/schema and a deliberate compatibility query for legacy Open Library reviews.
+
+- “All reviews” plus exact average/breakdown requires unbounded reads as a book grows; fix: paginate reviews and show page-scoped/approximate aggregates, or introduce a trusted aggregation service.
+
+- Any member can manufacture valid-looking Open Library work IDs and review them, flooding Latest/Trending without needing a real book; fix: only permit reviews where a validated catalog document exists.
+
+- Canonical ISBN keys can be permanently squatted or poisoned because rules cannot verify an ISBN against Google Books/Open Library; fix: allow member-created books only under opaque community IDs and reserve external-ID catalog entries for a trusted importer.
+
+- “Creator can edit for 24 h” lets the creator mutate a book’s shared identity/details after others use it; fix: make identity fields immutable and allow only bounded correction fields, preferably subject to moderation.
+
+- Firestore Rules cannot enforce serialized document bytes with a “`request.resource.size()`-style” map check; map `.size()` counts keys, not bytes; fix: impose conservative per-field/list limits that guarantee <1 MiB and reject oversized JSON client-side before retryable sync.
+
+- A nominal 20,000-character cap does not guarantee a 20 KB document, especially with Unicode, nested maps, unknown fields, and many fields; fix: define a closed record schema or explicit byte-budgeted field caps for every persisted field.
+
+- The migration can omit records residing in other Drive device files if it uploads only the current IndexedDB snapshot; fix: first complete and verify a full Drive merge, then upload Firestore, and mark migration only after paginated remote verification.
+
+- Marking `migratedV2` after successful writes alone is unsafe against partial migration, local crashes, or missed tombstones; fix: persist a resumable migration manifest and mark complete only after every local record/tombstone compares equal-or-newer remotely.
+
+- New devices cannot lazily restore Drive drawings without Drive authorization, contradicting “one persistent Firebase session” and “never asks for Drive”; fix: state that opening a missing drawing requires an explicit Drive-connect action and provide an export/download fallback.
+
+- Sign-out proof that pages through every record is costly and can fail midway, while local cached account UI can expose a former user’s private diary; fix: make sign-out resumable, never bind local data to a different UID, and offer an explicit device-data lock/wipe policy.
+
+- The plan says every collection is default-deny but supplies no actual rules for records, catalog, activity, friendship, or new reviews; fix: treat a complete rules file and adversarial emulator tests as a prerequisite before implementation, not a later extension.
+
+- A referrer-restricted browser API key and App Check do not stop a hostile authenticated member using the app/API legitimately; fix: describe them only as abuse friction and add real server-side enforcement if hostile-member resistance is required.
+
+- Handle lookups permit cheap enumeration of the small handle namespace through direct `get`s; fix: use exact-match lookup only with rate limiting through a backend, or accept and document that handles are discoverable member-visible identifiers.
+
+VERDICT: REVISE
+### Claude's response (round 1)
+Accepted nearly all; see "Revisions after Codex round 1" in PLAN-v2.md. Key changes: honest availability framing (no backend => authenticated quota DoS possible; invite-only beta + daily counters + Blaze/Functions before public), Phase 0 = full rules + emulator tests first, rank as its own record, rules reject stale writes, server-time pull cursor with overlap, resumable verified migration, catalog docs as untrusted hints rendered from live APIs, canonical books/{key}/reviews, corrected friend batch rules, direct-get activity. Rejected nothing outright; quota caps only where rules can enforce them (daily counters).
+
+## Round 2 - Codex
+Several round-1 issues are substantively addressed: server-time pull overlap, resumable Drive migration, per-record stale-write rejection, canonical reviews, reciprocal unfriend, direct activity reads, and honest availability framing. Remaining material problems:
+
+- The daily-counter rule does not enforce a per-operation limit: one batch can create 400 catalog docs while incrementing `catalogAdds` by only 1, and every create sees the same `getAfter` value; fix: use trusted server-issued single-use tokens or accept that Spark rules cannot enforce this quota.
+
+- The proposed beta mitigation still leaves unlimited private-record, review, report, and activity writes, so one hostile member can exhaust daily writes/storage even without catalog/request spam; fix: explicitly make availability out of scope for the beta or add a backend-enforced quota before claiming hostile-member security.
+
+- Record deletes must be forbidden: otherwise an owner can physically delete a tombstone, then an old offline client can recreate the record because creates are always allowed; fix: permit logical deletion only (`deleted: true`) and deny Firestore document deletion.
+
+- The stated “max ~20 KB” conflicts with client acceptance of 200 KB records, while Rules cannot measure serialized JSON bytes; fix: publish per-kind field caps whose worst-case encoded document is safely below 1 MiB and align the advertised/client cap.
+
+- Trending needs the latest 200 reviews, but the only permitted collection-group query is limited to 30; fix: specify seven cursor-paginated queries of at most 30, cache the result, and budget their reads.
+
+- Review creation has no daily limit at all: a member can review every existing catalog book and flood Latest/Trending; fix: add a genuinely enforceable review quota via backend-issued tokens, or state that feed manipulation is accepted in beta.
+
+- The Google Books browser key remains a shared ~1,000-query/day quota that any visitor on the allowed origin can drain, degrading all search; fix: add a client-side circuit breaker and durable cache, and fall back to Open Library before the shared quota is exhausted.
+
+- “First 50 friends” is not a real cap because the friend limit remains client-only; fix: either enforce a hard limit with trusted issuance/counters or define the UI as showing a deterministic 50-friend subset and document that larger graphs are unsupported.
+
+- Request decline authorization is still unspecified; a permissive delete rule would let either participant erase requests and interfere with acceptance; fix: allow decline only by `to`, allow cancellation only by `from`, and bind both to the immutable request fields.
+
+VERDICT: REVISE
+### Claude's response (round 2)
+Accepted all nine; see "Revisions after Codex round 2". Daily counters dropped as unenforceable; availability declared out of scope for the beta; record deletes denied; caps aligned at 100 KB; paginated trending; Google Books circuit breaker; 50-friend display subset; decline/cancel rules. Round 3 skipped: the remaining items are rule details that Phase 0 (complete rules + adversarial emulator tests) proves directly.
+
+## v2.0 phase A - post-build inspection (Codex, fresh session)
+- **P0 — `js/syncer.js:migrate` (176–203): migration can permanently omit other-device diary data.**  
+  Scenario: Firebase session restores automatically but Drive has no token, or `runSync()` fails; the code still marks all current local records migrated and sets `migratedV2`, after which it never imports the old Drive device files. A later sign-out can wipe the only local copy of records that existed only on another device.  
+  Fix: require a successful, complete legacy Drive merge whenever legacy device files may exist; do not set `migratedV2` on absent token or any merge/discovery failure.
+
+- **P0 — `js/store.js:restore` (268–285): a concurrent edit can have its dirty marker erased.**  
+  Scenario: `restore()` reads `dirty` at line 281, a user edit commits and adds its record to `dirty`, then `restore()` writes its stale map at line 283. That edit is no longer uploaded, and cloud sign-out sees no dirty work and wipes it. The separate `mutationGen` read/write has the same lost-update race.  
+  Fix: merge restored records, increment the generation, and union dirty entries in one read-write IndexedDB transaction (or serialize restore against all writes).
+
+- **P0 — `js/syncer.js:signOutCloud` (372–416): final proof has an unchecked write-to-wipe race.**  
+  Scenario: after line 402 confirms `dirty` is empty, the user (or another still-open UI task) saves an edit before `stopAll()` at line 407. The new record is never checked or pushed, but `wipe()` deletes it. The Drive sign-out path has the required final generation comparison; the cloud path does not.  
+  Fix: capture `mutationGen` before proof and immediately before stopping/wiping require it unchanged and `dirty` empty, while preventing new writes for the whole sign-out critical section.
+
+- **P1 — `js/store.js:restore` / `mergeIn` (216–232, 279): restoring a clock-skewed backup makes subsequent edits lose.**  
+  Scenario: a Drive backup contains a record written while a phone clock was ahead. `capClock` stores `highestT = min(importedT, Date.now())`; the next local edit gets a revision lower than the restored record. Firestore rejects it when the remote record exists, `pushDirty()` adopts the old remote version, and the new edit disappears.  
+  Fix: never cap `highestT` below any persisted/imported revision; retain the true maximum and let the HLC remain ahead of wall time.
+
+- **P1 — `js/cloud.js:pushDirty` (70–75): equal-revision conflicts are silently discarded.**  
+  Scenario: two installations share a cloned IndexedDB profile/device ID and make different writes in the same millisecond, producing the same `(t,d)`. Firestore rejects the second write; this code treats an equal remote revision as safely covering it, merges the remote payload, acknowledges the dirty entry, and loses the local payload.  
+  Fix: only acknowledge a rejected write on an equal revision after verifying the canonical payload is identical; otherwise surface a conflict and mint/retry a strictly newer revision.
+
+- **P1 — `firestore.rules:records.validRec` (45–65): the promised bounded, closed record schemas are not enforced.**  
+  Scenario: an invited user can write arbitrary nested maps/strings under any unrecognized `data` key, up to Firestore’s document limit, despite the 100 KB contract. This enables quota/storage exhaustion and invalid private-record shapes that can poison that user’s sync on every device.  
+  Fix: validate each `kind` with an exact allowed `data` key set, types, and size limits for every permitted field, including nested maps.
+### Claude's dispositions
+- P0-1 accepted (adapted): migration without a Drive token no longer counts as a legacy merge; the first Drive connection afterwards merges the old device files once (legacyDriveMerged) and marks what arrived dirty. Old Drive files are never deleted, so nothing is lost before that happens.
+- P0-2 accepted: restore marks dirty and bumps the generation inside the merge transaction (mergeIn localEdit).
+- P0-3 accepted: cloud sign-out captures mutationGen before the proof and requires it unchanged (plus empty dirty) right before wiping.
+- P1-4 rejected with reasoning: restore validation refuses revisions after max(now, highestT), so an imported t is either <= now (cap irrelevant) or <= highestT (highestT is not lowered: it is only raised when t exceeds it).
+- P1-5 rejected: equal (t, d) with different payload needs two installs sharing one device id; deviceId is a per-install random UUID and is never exported or restored.
+- P1-6 rejected for the beta: data maps are open by design (unknown fields preserved); an owner can only bloat their own documents, which is the accepted availability risk in PLAN-v2.
+Review-skill pass also fixed: edits during the move no longer block it, refused records surface in the pill instead of a silent eternal "Saving", reviews wait for a confirmed session.
