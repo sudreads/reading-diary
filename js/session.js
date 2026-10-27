@@ -26,7 +26,7 @@ export const clock = (ms) => {
 let open = false;
 export const sessionOpen = () => open;
 
-// complete(): saves the day, returns { id, streak } (or null if today was already counted).
+// complete(): saves the session, returns { id, streak }.
 // addMinutes(id, minutes): records how long "Keep going" ran. Both are owned by app.js.
 // onClose(finished): finished is false when he stopped or left before 0:00.
 export function readingSession(book, { cover, complete, addMinutes, openNotebook, onClose }) {

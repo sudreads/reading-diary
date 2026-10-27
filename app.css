@@ -384,3 +384,4 @@ body.gated .tabbar, body.gated #pill { display: none; }
 .session-time { font-size: 4.5rem; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1; margin: 8px 0; }
 .session-note { max-width: 300px; }
 .checkin-card .stack.wide { width: 100%; }
+.session-again { margin-top: 10px; }

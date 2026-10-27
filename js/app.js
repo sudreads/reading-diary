@@ -13,7 +13,7 @@ import { handleSheet, adminPanel } from './reviews.js';
 import { friendsCard, schedulePublish } from './friends.js';
 import { readingSession, sessionOpen } from './session.js';
 
-const VERSION = '2.3.1';
+const VERSION = '2.3.2';
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'explore', label: 'Explore', icon: '🔍' },
@@ -240,8 +240,10 @@ function currentBookCard(book, readToday) {
     const today = localDate();
     const undoable = data.sessions.some((s) => s.bookId === book.id && s.date === today && s.read === true);
     question = h('div', { class: 'checkin done' },
-      h('p', null, '✓ You read today. See you tomorrow!'),
+      h('p', null, '✓ You read today.'),
       undoable && h('button', { class: 'link-btn', onclick: () => undoToday(book) }, 'Undo'));
+    question = h('div', null, question,
+      h('button', { class: 'btn wide session-again', onclick: () => startSession(book) }, '⏱ Start a reading session'));
   } else if (notYetToday()) {
     question = h('div', { class: 'checkin' },
       h('p', { class: 'muted' }, 'No problem - start a session when you\'re ready to read.'),
@@ -273,7 +275,8 @@ function startSession(book) {
     cover,
     complete: async () => {
       const today = localDate(); // the date it finished, even if it started before midnight
-      if (readingDates(await store.list('sessions')).has(today)) return null; // another tab got there first
+      // Saved even if today already counts (a second session, another tab): the streak counts days,
+      // and the record keeps this session's minutes.
       const rec = await store.save('sessions', { bookId: book.id, date: today, read: true, pages: 0, minutes: 5 });
       return { id: rec.id, streak: streak(await store.list('sessions'), today) };
     },
@@ -815,15 +818,26 @@ function setupServiceWorker() {
     .catch(() => navigator.serviceWorker.register('sw-classic.js')) // no module workers: offline only
     .then((reg) => {
     reconcileReminders(reg);
+    // Updates install themselves: people never noticed the bar and stayed on old versions.
+    // Right away if one is waiting as the app opens (nothing is in progress yet), otherwise the
+    // next time the app is hidden - never during a reading session, and after the notebook is saved.
+    const apply = (w) => { updating = true; w.postMessage('skipWaiting'); };
     const offer = (w) => {
       const bar = document.getElementById('update');
       bar.hidden = false;
-      bar.onclick = () => { updating = true; w.postMessage('skipWaiting'); };
+      bar.onclick = () => apply(w);
     };
-    if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+    if (reg.waiting && navigator.serviceWorker.controller) apply(reg.waiting);
     reg.addEventListener('updatefound', () => {
       const w = reg.installing;
       w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); });
+    });
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState === 'visible') { reg.update().catch(() => {}); return; } // look for a new version
+      // Not with a sheet open either: a half-written review there isn't saved anywhere yet.
+      if (!reg.waiting || !navigator.serviceWorker.controller || sessionOpen() || document.getElementById('sheets').children.length) return;
+      await flushNotebook();
+      apply(reg.waiting);
     });
   }).catch(() => {});
   // Reload only for an update he accepted - not when the first install claims the page.
