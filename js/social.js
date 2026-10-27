@@ -53,3 +53,15 @@ export function averageOf(reviews) {
   if (!reviews.length) return 0;
   return reviews.reduce((n, r) => n + r.rating, 0) / reviews.length;
 }
+
+// A 1.x review can still sit under works/ beside the same person's newer one under books/: count
+// each reader once per book, the newer path winning (as on the book page).
+export function onePerReader(reviews) {
+  const seen = new Map();
+  for (const r of reviews) {
+    const id = `${r.bookKey}|${r.uid}`;
+    const had = seen.get(id);
+    if (!had || (had.legacy && !r.legacy)) seen.set(id, r);
+  }
+  return reviews.filter((r) => seen.get(`${r.bookKey}|${r.uid}`) === r);
+}

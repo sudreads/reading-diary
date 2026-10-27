@@ -64,3 +64,16 @@ test('average of loaded reviews', () => {
   assert.equal(averageOf([]), 0);
   assert.equal(averageOf([{ rating: 5 }, { rating: 3 }]), 4);
 });
+
+test('Explore counts each reader once per book, preferring the newer review', async () => {
+  const { onePerReader } = await import('../js/social.js');
+  const list = [
+    { bookKey: 'ol:OL1W', uid: 'a', legacy: true, rating: 2 },
+    { bookKey: 'ol:OL1W', uid: 'a', legacy: false, rating: 5 },
+    { bookKey: 'ol:OL1W', uid: 'b', legacy: false, rating: 4 },
+    { bookKey: 'gb:x', uid: 'a', legacy: false, rating: 3 },
+  ];
+  const out = onePerReader(list);
+  assert.equal(out.length, 3);
+  assert.equal(out.find((r) => r.uid === 'a' && r.bookKey === 'ol:OL1W').rating, 5);
+});

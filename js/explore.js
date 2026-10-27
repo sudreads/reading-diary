@@ -6,7 +6,7 @@ import * as fb from './firebase.js';
 import * as syncer from './syncer.js';
 import { h, fill, sheet, toast } from './dom.js';
 import { searchBooks, bookDetails, plainText, bookKeyOf } from './catalog.js';
-import { averageOf, REPORT_REASONS } from './social.js';
+import { averageOf, onePerReader, REPORT_REASONS } from './social.js';
 import { friendsActivity, friendSheet } from './friends.js';
 
 const monthYear = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : '');
@@ -25,7 +25,8 @@ let lastQuery = '';
 async function loadFeed() {
   if (Date.now() - feedCache.at < 15 * 60 * 1000 && feedCache.latest.length) return feedCache;
   // One page of the 30 newest reviews (the rules' limit): ~30 reads per refresh, cached 15 min.
-  const { list: pages } = await fb.latestReviews(null);
+  const { list: raw } = await fb.latestReviews(null);
+  const pages = onePerReader(raw);
   const byBook = new Map();
   for (const r of pages) {
     if (!r.bookKey) continue;
@@ -215,6 +216,7 @@ export function bookPage(key, hint, ctx) {
             card.remove();
             all = all.filter((x) => x !== r);
             drawRatings();
+            feedCache.at = 0; // Explore's counts must drop it too
             if (mine) ctx.onUnpublish?.(key);
           } catch (e) { toast(`Couldn't delete (${e.code || e.message})`); }
         } }, 'Delete')));
