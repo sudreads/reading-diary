@@ -13,7 +13,7 @@ import { handleSheet, adminPanel } from './reviews.js';
 import { friendsCard, schedulePublish } from './friends.js';
 import { readingSession, sessionOpen } from './session.js';
 
-const VERSION = '2.3.2';
+const VERSION = '2.3.3';
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'explore', label: 'Explore', icon: '🔍' },
@@ -813,9 +813,8 @@ function setupServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   if (new URLSearchParams(location.search).has('emu')) return; // emulator testing: always fresh files
   let updating = false;
-  // A module worker: it imports the app's day/streak logic for reading reminders.
-  navigator.serviceWorker.register('sw.js', { type: 'module' })
-    .catch(() => navigator.serviceWorker.register('sw-classic.js')) // no module workers: offline only
+  // Classic, never a module worker: see the top of sw.js for how that stranded phones on 2.0.
+  navigator.serviceWorker.register('sw.js')
     .then((reg) => {
     reconcileReminders(reg);
     // Updates install themselves: people never noticed the bar and stayed on old versions.

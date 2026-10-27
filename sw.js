@@ -1,8 +1,46 @@
-// Offline shell + reading reminders. A module worker, so it shares the app's day/streak logic.
-// Bump CACHE on every release; the page asks before switching versions.
-import { decideReminder, reminderText } from './js/reminder.js';
+// Offline shell + reading reminders.
+// A CLASSIC worker on purpose: 2.0 registered sw.js as a classic script, and browser updates keep
+// that type - a module worker (import ...) failed to evaluate there, so those phones never updated
+// past 2.0. No import/export in this file, ever.
+// Bump CACHE on every release.
 
-const CACHE = 'rd-v17';
+// ---- BEGIN copy of js/derive.js + js/reminder.js (tests/sw.test.mjs checks they still agree) ----
+const QUIET_FROM = 22.5, QUIET_UNTIL = 8;
+function localDate(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function addDays(dateStr, n) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return localDate(new Date(y, m - 1, d + n));
+}
+function readingDates(sessions) {
+  return new Set(sessions.filter((r) => !r.deleted).filter((s) => s.read === true || (s.pages || 0) > 0 || (s.minutes || 0) > 0).map((s) => s.date));
+}
+function streak(sessions, today = localDate()) {
+  const dates = readingDates(sessions);
+  let day = dates.has(today) ? today : addDays(today, -1);
+  let n = 0;
+  while (dates.has(day)) { n++; day = addDays(day, -1); }
+  return n;
+}
+function decideReminder({ sessions, remindersOn, lastReminder, now = new Date() }) {
+  const hour = now.getHours() + now.getMinutes() / 60;
+  if (hour < QUIET_UNTIL || hour >= QUIET_FROM) return { send: false, why: 'night' };
+  if (!remindersOn) return { send: false, why: 'off' };
+  const today = localDate(now);
+  if (lastReminder === today) return { send: false, why: 'already-today' };
+  if (readingDates(sessions).has(today)) return { send: false, why: 'read-today' };
+  return { send: true, today, streak: streak(sessions, today) };
+}
+function reminderText(streakDays) {
+  return streakDays
+    ? { title: `🔥 Keep your ${streakDays}-day streak going`, body: "You haven't read today yet - a 5-minute reading session is enough." }
+    : { title: '📖 Time to read', body: 'A 5-minute reading session today starts a streak.' };
+}
+// ---- END copy ----
+
+const CACHE = 'rd-v18';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/caveat-500-latin.woff2',
