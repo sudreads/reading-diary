@@ -378,3 +378,9 @@ body.gated .tabbar, body.gated #pill { display: none; }
 .friend-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; text-align: center; }
 .friend-stats .big { font-size: 1.6rem; font-weight: 700; }
 .friend-dot { display: grid; place-items: center; font-size: 1.6rem; }
+
+/* Reading session timer (session.js) */
+.session-screen { z-index: 40; }
+.session-time { font-size: 4.5rem; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1; margin: 8px 0; }
+.session-note { max-width: 300px; }
+.checkin-card .stack.wide { width: 100%; }

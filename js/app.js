@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import * as syncer from './syncer.js';
-import { h, s, clear, fill, toast, sheet, ago } from './dom.js';
+import { h, s, clear, fill, toast, sheet, ago, confetti } from './dom.js';
 import { streak, readingDates, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
@@ -11,8 +11,9 @@ import { exploreScreen, bookPage, chooseStatusSheet } from './explore.js';
 import { dedupePlan } from './dedupe.js';
 import { handleSheet, adminPanel } from './reviews.js';
 import { friendsCard, schedulePublish } from './friends.js';
+import { readingSession, sessionOpen } from './session.js';
 
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'explore', label: 'Explore', icon: '🔍' },
@@ -39,7 +40,7 @@ async function quiet(fn) {
   try { return await fn(); } finally { quietDepth--; }
 }
 function maybeRender() {
-  if (!pendingRender || busy.current()) return;
+  if (!pendingRender || busy.current() || sessionOpen()) return;
   pendingRender = false;
   render();
 }
@@ -102,7 +103,7 @@ let checkinOpen = false;
 // First thing after opening on a day he hasn't read yet. Never over the gate, another sheet, or
 // the notebook while he's writing; re-checked on every render, click and at midnight.
 function maybeCheckin() {
-  if (checkinOpen || ui.gated || busy.current() || document.getElementById('sheets').children.length) return;
+  if (checkinOpen || sessionOpen() || ui.gated || busy.current() || document.getElementById('sheets').children.length) return;
   const book = currentBook();
   const today = localDate();
   if (!book || readingDates(data.sessions).has(today) || notYetToday()) return;
@@ -116,7 +117,7 @@ function maybeCheckin() {
       cover(book),
       h('h1', null, 'Did you read today?'),
       h('p', { class: 'muted' }, book.title),
-      h('button', { class: 'btn primary wide big-btn', onclick: async (e) => { await readTodayClick(e, book); close(); } }, 'I read today'),
+      h('button', { class: 'btn primary wide big-btn', onclick: () => { close(); startSession(book); } }, 'Start reading session'),
       h('button', { class: 'btn wide big-btn', onclick: () => {
         try { localStorage.setItem('rd-notyet', localDate()); } catch { /* ignore */ }
         close();
@@ -243,13 +244,13 @@ function currentBookCard(book, readToday) {
       undoable && h('button', { class: 'link-btn', onclick: () => undoToday(book) }, 'Undo'));
   } else if (notYetToday()) {
     question = h('div', { class: 'checkin' },
-      h('p', { class: 'muted' }, 'No problem - tap when you\'ve read.'),
-      h('button', { class: 'btn primary wide', onclick: (e) => readTodayClick(e, book) }, 'I read today'));
+      h('p', { class: 'muted' }, 'No problem - start a session when you\'re ready to read.'),
+      h('button', { class: 'btn primary wide', onclick: () => startSession(book) }, 'Start reading session'));
   } else {
     question = h('div', { class: 'checkin' },
       h('p', { class: 'question' }, 'Did you read today?'),
       h('div', { class: 'actions' },
-        h('button', { class: 'btn primary', onclick: (e) => readTodayClick(e, book) }, 'I read today'),
+        h('button', { class: 'btn primary', onclick: () => startSession(book) }, 'Start reading session'),
         h('button', { class: 'btn', onclick: () => { try { localStorage.setItem('rd-notyet', localDate()); } catch { /* ignore */ } render(); } }, 'Not yet')));
   }
   return h('div', { class: 'card current' },
@@ -266,13 +267,26 @@ function currentBookCard(book, readToday) {
       h('button', { class: 'btn', onclick: () => finishSheet(book) }, 'Finished 🏆')));
 }
 
-async function readTodayClick(e, book) {
-  e.currentTarget.disabled = true;
-  const today = localDate();
-  if (readingDates(await store.list('sessions')).has(today)) return render(); // another tab got there first
-  await store.save('sessions', { bookId: book.id, date: today, read: true, pages: 0, minutes: 0 });
-  const st = streak(await store.list('sessions'), today);
-  toast(st > 1 ? `🔥 ${st} days in a row!` : '🔥 Streak started!');
+// Today counts only after a 5-minute session runs down in the app (session.js).
+function startSession(book) {
+  readingSession(book, {
+    cover,
+    complete: async () => {
+      const today = localDate(); // the date it finished, even if it started before midnight
+      if (readingDates(await store.list('sessions')).has(today)) return null; // another tab got there first
+      const rec = await store.save('sessions', { bookId: book.id, date: today, read: true, pages: 0, minutes: 5 });
+      return { id: rec.id, streak: streak(await store.list('sessions'), today) };
+    },
+    addMinutes: async (id, minutes) => {
+      if (await store.get('sessions', id)) await store.save('sessions', { id, minutes }); // undone meanwhile: leave it
+    },
+    openNotebook: () => openMyBook(book.id),
+    onClose: (finished) => {
+      // Stopped or left early: don't ask "Did you read today?" straight away again.
+      if (!finished) try { localStorage.setItem('rd-notyet', localDate()); } catch { /* ignore */ }
+      pendingRender = true; maybeRender();
+    },
+  });
 }
 
 async function undoToday(book) {
@@ -335,10 +349,7 @@ function publicSwitch(book, initial) {
 }
 
 function celebrate() {
-  const c = h('div', { class: 'confetti', 'aria-hidden': 'true' },
-    Array.from({ length: 24 }, (_, i) => h('i', { style: `--x:${(i * 37) % 100}vw;--d:${(i % 6) * 0.08}s;--h:${(i * 47) % 360}` })));
-  document.body.append(c);
-  setTimeout(() => c.remove(), 1800);
+  confetti();
   toast('🏆 New trophy!');
 }
 
@@ -868,7 +879,7 @@ async function boot() {
   document.addEventListener('click', () => setTimeout(() => { maybeRender(); maybeCheckin(); }, 0));
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'hidden') await flushNotebook(); // keep a half-finished drawing
-    else { schedulePublish(); if (!busy.current()) render(); } // a new day: "Not yet" resets, streak updates
+    else { schedulePublish(); if (!busy.current() && !sessionOpen()) render(); } // a new day: "Not yet" resets, streak updates
   });
   window.addEventListener('pagehide', () => { flushNotebook(); });
   let askedHandle = false, lastAccount = '';

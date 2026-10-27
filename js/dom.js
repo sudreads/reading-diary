@@ -77,3 +77,10 @@ export function ago(ts) {
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
   return `${Math.round(s / 86400)} days ago`;
 }
+
+export function confetti() {
+  const c = h('div', { class: 'confetti', 'aria-hidden': 'true' },
+    Array.from({ length: 24 }, (_, i) => h('i', { style: `--x:${(i * 37) % 100}vw;--d:${(i % 6) * 0.08}s;--h:${(i * 47) % 360}` })));
+  document.body.append(c);
+  setTimeout(() => c.remove(), 1800);
+}

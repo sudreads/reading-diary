@@ -12,7 +12,7 @@ export function addDays(dateStr, n) {
 
 const live = (list) => list.filter((r) => !r.deleted);
 
-// A day counts if he tapped "I read today" (read: true) or, for 1.0 data, logged pages or minutes.
+// A day counts once a reading session finished (read: true; 2.0-2.2 also by tapping "I read today") or, for 1.0 data, logged pages or minutes.
 export function readingDates(sessions) {
   return new Set(live(sessions).filter((s) => s.read === true || (s.pages || 0) > 0 || (s.minutes || 0) > 0).map((s) => s.date));
 }

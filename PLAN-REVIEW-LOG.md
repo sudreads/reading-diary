@@ -626,3 +626,63 @@ texts (new `fill()` in dom.js), Explore not redrawing once the account check set
 3. Request lists capped at 50 in the UI - **rejected**: 100-person invite-only beta; noted.
 4. Explore shows first 50 friends - **rejected**: deliberate read-cost cap from PLAN-v2.
 Rounds used: 1 (fixes are small and covered by rules tests). Rules 37/37, unit 63/63.
+
+
+# 2.3 Reading session timer
+
+## Round 1 - Codex (plan PLAN-v2.3-session.md)
+
+- `busy.current` is reset to `false` inside every `render()`, so an in-flight render can silently disable the session guard; fix: use a separate immutable `sessionOpen` flag checked by `render`, `maybeRender`, `maybeCheckin`, and visibility handlers.
+
+- The cross-tab “re-check then save” is a TOCTOU race: two tabs can both see no session and both save; fix: enforce one read-completion record per local date with an IndexedDB transaction/unique date key.
+
+- A successful wake-lock request is not durable—browsers may release it for system/power reasons without the user leaving; fix: listen for `WakeLockSentinel.release` and switch explicitly to paused/fallback state or stop with a clear message.
+
+- `wakeLock.request()` is async, so hiding the app while the request is pending can select fallback behavior and then acquire a lock in a hidden document; fix: give each start/resume an epoch, discard/release late results, and check `document.visibilityState === 'visible'` before accepting them.
+
+- Wake Lock requests can reject even on supported browsers (not visible, low battery, policy, insecure context); fix: treat request failure as expected fallback behavior and never infer support from `navigator.wakeLock` alone.
+
+- `visibilitychange` is not a reliable “deliberate leave” signal: iOS Safari/PWA may delay or omit it during termination, and Android lifecycle behavior varies; fix: describe this as best-effort and also handle `pagehide`/`pageshow` for cleanup and paused UI restoration.
+
+- The current `pagehide` handler only flushes notebook state, so a visible session can remain logically active through bfcache/navigation; fix: notify the session lifecycle on `pagehide`, release the lock, and require an explicit resume after `pageshow`.
+
+- A `Date.now()`-style injected clock allows wall-clock changes to add or remove reading time; fix: use `performance.now()` for elapsed timer math and use `new Date()` only when assigning the completion date.
+
+- The 250 ms interval wastes battery and can race completion/cleanup; fix: render with `requestAnimationFrame` while visible and use one deadline timeout, clearing both on every terminal transition.
+
+- Completion and Stop can race when the timer expires as the confirmation opens, potentially saving after the user chose Stop; fix: make timer transitions single-winner via a terminal state/epoch before awaiting confirmation or storage.
+
+- “Keep going” can exceed the validator’s 1,440-minute limit, causing save failure or invalid data; fix: cap tracked minutes at 1,440 or end the extension before that limit.
+
+- Updating a completed session’s minutes needs its exact persisted ID and an atomic update, otherwise a concurrent undo/sync merge can update the wrong or deleted record; fix: return the created ID and update that ID inside a transaction, tolerating a missing record.
+
+- Undo is book-scoped while the counted day is global, so it may claim to lower the streak while another same-day record still counts; fix: label it accurately or undo all user-created completion records for that date after confirmation.
+
+- The existing `readingDates()` counts any positive `minutes`, so any prematurely persisted keep-going/fallback record would count the day without five minutes; fix: persist no session until completion, or add an explicit `qualified` flag and derive streaks solely from it.
+
+- Replacing buttons alone is insufficient if the check-in sheet remains open during async session creation; fix: close or disable the originating sheet before opening the session and restore it only if start fails.
+
+VERDICT: REVISE
+
+### Claude response
+Accepted: separate sessionOpen flag; wake-lock release event switches to pause mode; epoch + visibility check on late wake-lock results; pagehide treated as leaving; performance.now for timing; single terminal state; cap at 1440 min; update by exact id, tolerate missing; close check-in screen before opening.
+Rejected: cross-tab TOCTOU (pre-existing, a duplicate same-day record is harmless since streak counts dates); rAF instead of interval (a 500 ms repaint is negligible for 5 min); undo wording (unchanged behaviour).
+Stopped after 1 round: everything remaining is implementation detail, folded into the build. Feature-size job, ceiling 2.
+
+## Post-build inspection - Codex (fresh session)
+
+Found 3 issues:
+
+- **P1 — cross-tab “already counted” check is racy** ([js/app.js](C:\Users\lenovo\OneDrive\projects\reading-diary\js\app.js:275)). `complete()` does `list()` and then `save()` as separate operations. Two tabs completing together can both observe no session for today and both insert one. This does not meet the stated “another tab got there first” rule. The check needs an atomic store transaction / unique-per-date write strategy.
+
+- **P2 — `createTimer` does not implement the promised timer API** ([js/session.js](C:\Users\lenovo\OneDrive\projects\reading-diary\js\session.js:11)). The plan specifies `durationMs`, `resume()`, `remaining()`, and `done()`; the implementation ignores duration and exposes only `running`, `start`, `pause`, and `elapsed`. That makes the “pure, testable state machine” contract incomplete and will fail consumers/tests written to the planned API.
+
+- **P2 — the countdown visibly reaches `0:00` before the session completes** ([js/session.js](C:\Users\lenovo\OneDrive\projects\reading-diary\js\session.js:20), [js/session.js](C:\Users\lenovo\OneDrive\projects\reading-diary\js\session.js:72)). `clock()` uses `Math.round`, so 1–499 ms remaining renders as `0:00`, but `finish()` waits for `left <= 0` on a later tick. Users can briefly see `0:00` with an active Stop button and without the day being saved. Use `Math.ceil` for remaining countdown display, or finish before rendering zero.
+
+### Claude dispositions
+- P1 cross-tab race: rejected, same as plan round (pre-existing; a duplicate same-day record is harmless, streak counts dates).
+- P2 timer API differs from plan: rejected, the smaller API (start/pause/elapsed) is what the module needs and is tested.
+- P2 0:00 shown before completion: fixed (Math.ceil), test added.
+Inspection rounds used: 1.
+
+Code review (inline): fixed two findings - after Stop or leaving, the check-in screen popped straight back up (now marks "not yet" for today); the "you left the app" toast fired while hidden and was never seen (now shown on return).

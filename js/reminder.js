@@ -18,6 +18,6 @@ export function decideReminder({ sessions, remindersOn, lastReminder, now = new 
 // Generic on purpose: lock screens are visible to anyone holding the phone.
 export function reminderText(streakDays) {
   return streakDays
-    ? { title: `🔥 Keep your ${streakDays}-day streak going`, body: "You haven't read today yet - a few pages is enough." }
-    : { title: '📖 Time to read', body: 'A few pages today starts a streak.' };
+    ? { title: `🔥 Keep your ${streakDays}-day streak going`, body: "You haven't read today yet - a 5-minute reading session is enough." }
+    : { title: '📖 Time to read', body: 'A 5-minute reading session today starts a streak.' };
 }
