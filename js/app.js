@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import * as syncer from './syncer.js';
-import { h, s, clear, toast, sheet, ago } from './dom.js';
+import { h, s, clear, fill, toast, sheet, ago } from './dom.js';
 import { streak, readingDates, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
@@ -10,8 +10,9 @@ import { bookKeyOf } from './catalog.js';
 import { exploreScreen, bookPage, chooseStatusSheet } from './explore.js';
 import { dedupePlan } from './dedupe.js';
 import { handleSheet, adminPanel } from './reviews.js';
+import { friendsCard, schedulePublish } from './friends.js';
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'explore', label: 'Explore', icon: '🔍' },
@@ -505,6 +506,7 @@ function settingsScreen() {
       fbConfigured() && accountCard(ds, await store.getMeta('deleteJob', false),
         { uid: await store.getMeta('ownerUid', ''), email: await store.getMeta('ownerEmail', '') }),
       fbConfigured() && ds.admin && adminPanel(),
+      fbConfigured() && friendsCard({ cover, rerender: render }),
       st.cloud ? h('div', { class: 'card' },
         h('h2', null, 'Where your diary is saved'),
         h('p', { class: 'small' }, st.pending ? `${st.pending} change${st.pending === 1 ? '' : 's'} waiting to save to your account.` : `Saved to your reader account · ${ago(st.lastSyncOk)}. Nothing to do: it saves by itself.`),
@@ -781,7 +783,7 @@ function remindersCard() {
     const state = active ? 'On. If you haven\'t read yet, your phone reminds you about once a day.'
       : st.on && st.notif !== 'granted' ? 'Notifications for Reading Diary seem to be blocked - check your phone\'s settings, then switch this on again.'
         : st.on && !st.registered ? 'Chrome dropped the reminder - switch it off and on again.' : 'Off.';
-    box.replaceChildren(
+    fill(box,
       h('h2', null, 'Reading reminders'),
       h('label', { class: 'switch-row' }, sw, h('span', null, h('strong', null, 'Remind me to read'), h('span', { class: 'muted small block' }, state))),
       h('p', { class: 'muted small' }, 'Chrome decides the exact time (roughly daily, more reliable the more you use the app). Never at night, at most once a day, and only on days you haven\'t read. Opening the app always asks "Did you read today?" too.'),
@@ -856,6 +858,7 @@ async function boot() {
   setupShell();
   store.onChange(() => {
     renderPill();
+    schedulePublish(); // friends see your streak and current book; sent only when it changed
     if (quietDepth > 0) return; // his own notebook typing - the page is already showing it
     pendingRender = true;
     maybeRender();
@@ -865,14 +868,14 @@ async function boot() {
   document.addEventListener('click', () => setTimeout(() => { maybeRender(); maybeCheckin(); }, 0));
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'hidden') await flushNotebook(); // keep a half-finished drawing
-    else if (!busy.current()) render(); // a new day: "Not yet" resets, streak updates
+    else { schedulePublish(); if (!busy.current()) render(); } // a new day: "Not yet" resets, streak updates
   });
   window.addEventListener('pagehide', () => { flushNotebook(); });
   let askedHandle = false, lastAccount = '';
   syncer.onStatus((s) => {
-    // Settings shows who you are: redraw it when the account check settles (not on every tick).
+    // Settings shows who you are and Explore needs the account: redraw them when the check settles (not on every tick).
     const acct = `${s.account}|${s.handle}|${s.checked}`;
-    if (acct !== lastAccount) { lastAccount = acct; if (ui.tab === 'me') { pendingRender = true; maybeRender(); } }
+    if (acct !== lastAccount) { lastAccount = acct; schedulePublish(); if (ui.tab === 'me' || ui.tab === 'explore') { pendingRender = true; maybeRender(); } }
     if (s.signedOut) { // another tab signed out: this one's diary is gone
       document.body.classList.add('gated');
       clear(main()).append(h('div', { class: 'gate' }, h('h1', null, 'Signed out'), h('p', null, 'You signed out in another tab.'),

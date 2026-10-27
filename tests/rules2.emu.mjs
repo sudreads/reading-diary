@@ -147,6 +147,7 @@ test('friend request: valid request works; impersonation and wrong targets are r
   await assertFails(request('carol', 'alice_reads', 'bob', 'bob_b'));          // fake fromHandle
   await assertFails(request('carol', 'carol_c', 'alice', 'bob_b'));            // handle doesn't belong to target
   await assertFails(request('carol', 'carol_c', 'carol', 'carol_c'));          // self
+  await assertFails(request('bob', 'bob_b', 'alice', 'alice_reads'));          // crossed: alice already asked bob
   await assertFails(setDoc(doc(db('carol'), 'friendRequests', 'alice_bob'), { from: 'alice', to: 'bob', fromHandle: 'alice_reads', toHandle: 'bob_b', createdAt: serverTimestamp() }));
 });
 
@@ -215,6 +216,9 @@ test('activity: owner writes; only mutual friends read; never strangers', async 
   // a lingering one-sided edge (planted directly) does not grant access
   await admin((fs) => setDoc(doc(fs, 'friends', 'carol', 'list', 'alice'), { handle: 'alice_reads', since: new Date() }));
   await assertFails(getDoc(doc(db('carol'), 'activity', 'alice')));
+  // only the owner can take the card down
+  await assertFails(deleteDoc(doc(db('bob'), 'activity', 'alice')));
+  await assertSucceeds(deleteDoc(doc(db('alice'), 'activity', 'alice')));
 });
 
 test('activity: forged handles, other people\'s cards and bad fields are refused', async () => {

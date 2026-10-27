@@ -19,14 +19,24 @@
 <body>
 <main>
   <h1>Reading Diary - privacy</h1>
-  <p class="muted">Plain-language version. Last updated 24 October 2026. Reading Diary is an invite-only beta run by one person.</p>
+  <p class="muted">Plain-language version. Last updated 27 October 2026. Reading Diary is an invite-only beta run by one person.</p>
 
   <section>
     <h2>Private - only you</h2>
     <ul>
-      <li>Your notebook pages, drawings, comments, lessons, streak and reading log.</li>
-      <li>Stored on your phone, and backed up to a hidden folder in <strong>your own</strong> Google Drive that only this app can open. Nobody else, including the person running the app, can read it.</li>
+      <li>Your notebook pages, drawings, comments, lessons and reading log.</li>
+      <li>Your diary is stored on your phone and in your reader account (Google Firebase), where the security rules let only your own account read it. Drawings are backed up to a hidden folder in <strong>your own</strong> Google Drive that only this app can open.</li>
+      <li>Honest caveat: the person running the app owns the Firebase project, so Google's console could technically show the stored diary text. It is never looked at, shared or sold.</li>
       <li>Ratings and reviews on books where "Post publicly" is off.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Friends only - people you both accepted</h2>
+    <ul>
+      <li>Your reader name, your current streak, how many books you've finished, the book you're reading now, and the last book you finished with its star rating.</li>
+      <li>Never your notebook, drawings, comments or lessons.</li>
+      <li>Unfriend anyone from Settings → Friends; they stop seeing this straight away.</li>
     </ul>
   </section>
 
@@ -54,7 +64,7 @@
     <h2>Deleting your data</h2>
     <ul>
       <li>Turn off "Post publicly" on a book, or delete your review from its Reviews page, to remove that review.</li>
-      <li>Settings → <strong>Delete my public data</strong> removes all your public reviews, your reports and your reviews sign-in. Your reader name stays reserved so nobody else can use it to pretend to be you.</li>
+      <li>Settings → <strong>Delete my public data</strong> removes all your public reviews, your reports, your friendships and friend requests, the reading card your friends see, and your reviews sign-in. Your reader name stays reserved so nobody else can use it to pretend to be you.</li>
       <li>Your private diary is yours: Settings → Download backup gives you a copy; uninstalling the app and deleting the app's data in Google Drive (Drive → Settings → Manage apps) removes it.</li>
     </ul>
   </section>

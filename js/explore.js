@@ -4,9 +4,10 @@
 
 import * as fb from './firebase.js';
 import * as syncer from './syncer.js';
-import { h, sheet, toast } from './dom.js';
+import { h, fill, sheet, toast } from './dom.js';
 import { searchBooks, bookDetails, plainText, bookKeyOf } from './catalog.js';
 import { averageOf, REPORT_REASONS } from './social.js';
+import { friendsActivity, friendSheet } from './friends.js';
 
 const monthYear = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : '');
 const canRead = () => syncer.state.checked && (syncer.state.account === 'ready' || syncer.state.account === 'needs-handle');
@@ -82,7 +83,7 @@ export function exploreScreen(ctx) {
   if (canRead()) {
     home.append(h('p', { class: 'muted' }, 'Loading what readers are reading…'));
     loadFeed().then(({ trending, latest }) => {
-      home.replaceChildren(
+      fill(home,
         trending.length > 0 && h('section', null, h('h2', { class: 'section-title' }, 'Trending in Reading Diary'),
           h('div', { class: 'cover-strip' }, trending.map((b) => h('button', { class: 'strip-book', onclick: () => bookPage(b.key, b, ctx) },
             ctx.cover(b, 'cover'), h('span', { class: 'strip-title' }, b.title),
@@ -99,8 +100,20 @@ export function exploreScreen(ctx) {
   } else {
     home.append(h('p', { class: 'muted' }, 'Sign in to see what other readers think.'));
   }
+  // What friends are reading: only cards they share with friends (streak, current and last book).
+  const friendsBox = h('div');
+  friendsActivity().then((cards) => {
+    if (!cards.length) return;
+    friendsBox.replaceChildren(h('section', null, h('h2', { class: 'section-title' }, 'Friends'),
+      h('div', { class: 'stack' }, cards.map((a) => h('button', { class: 'feed-review', onclick: (e) => { const row = e.currentTarget; friendSheet(a, { cover: ctx.cover, onChange: () => { const rest = row.parentElement; row.remove(); if (!rest.children.length) friendsBox.replaceChildren(); } }); } },
+        a.currentBook ? ctx.cover(a.currentBook, 'cover-sm') : h('span', { class: 'cover-sm friend-dot' }, a.streak ? '🔥' : '🌱'),
+        h('span', { class: 'feed-text' },
+          h('strong', null, `@${a.handle}`),
+          h('span', { class: 'small' }, a.currentBook ? `Reading ${a.currentBook.title}` : a.lastFinished ? `Finished ${a.lastFinished.title}` : 'Not reading anything yet'),
+          h('span', { class: 'muted small' }, `${a.streak ? '🔥' : '🌱'} ${a.streak} day streak · ${a.finishedCount} finished`)))))));
+  }).catch(() => { /* friends are a bonus here; the Me tab shows any error */ });
   if (lastQuery.trim().length >= 2) run(lastQuery);
-  return h('div', { class: 'stack' }, input, results, home);
+  return h('div', { class: 'stack' }, input, results, friendsBox, home);
 }
 
 // ---------- Add to My Books ----------
@@ -147,7 +160,7 @@ export function bookPage(key, hint, ctx) {
   body.append(top, action, desc, ratings, list, more);
 
   function drawTop() {
-    top.replaceChildren(ctx.cover(book, 'cover-lg'),
+    fill(top, ctx.cover(book, 'cover-lg'),
       h('div', null,
         h('h1', { class: 'book-title' }, book.title || ''),
         book.author && h('div', null, book.author),
@@ -160,7 +173,7 @@ export function bookPage(key, hint, ctx) {
     const text = plainText(book.description);
     if (text) {
       const p = h('p', { class: 'description clamp-6' }, text);
-      desc.replaceChildren(h('h2', { class: 'section-title' }, 'About this book'), p,
+      fill(desc, h('h2', { class: 'section-title' }, 'About this book'), p,
         text.length > 300 && h('button', { class: 'link-btn', onclick: (e) => { p.classList.toggle('clamp-6'); e.currentTarget.textContent = p.classList.contains('clamp-6') ? 'More' : 'Less'; } }, 'More'));
     }
   }

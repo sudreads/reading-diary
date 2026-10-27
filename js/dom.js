@@ -35,6 +35,8 @@ function append(el, kids) {
 }
 
 export function clear(el) { while (el.firstChild) el.firstChild.remove(); return el; }
+// replaceChildren() that skips false/null like h() does (native would print the word "false").
+export function fill(el, ...kids) { clear(el); append(el, kids); return el; }
 
 let toastTimer;
 export function toast(msg) {

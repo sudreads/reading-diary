@@ -368,3 +368,13 @@ body.gated .tabbar, body.gated #pill { display: none; }
 @keyframes rise { from { transform: translateY(40px); opacity: 0; } }
 @keyframes fade { from { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---------- friends (2.2) ---------- */
+.add-friend { display: flex; gap: 8px; }
+.add-friend input { flex: 1; min-width: 0; }
+.request-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.request-row .grow { flex: 1; min-width: 0; }
+.friend-row { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; color: inherit; font: inherit; }
+.friend-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; text-align: center; }
+.friend-stats .big { font-size: 1.6rem; font-weight: 700; }
+.friend-dot { display: grid; place-items: center; font-size: 1.6rem; }

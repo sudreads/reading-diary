@@ -5,7 +5,7 @@ import { FIREBASE_CONFIG } from './config.js';
 
 const SDK = 'https://www.gstatic.com/firebasejs/12.19.0';
 let sdk = null; // { app, auth, db, fa, fs }
-const EMULATED = location.hostname === 'localhost' && new URLSearchParams(location.search).has('emu');
+const EMULATED = ['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).has('emu');
 let loading = null;
 
 export const isConfigured = () => !!FIREBASE_CONFIG;
@@ -218,6 +218,72 @@ export async function latestReviews(after = null) {
   return { list: res.docs.map((s) => toReview2(s, !s.data().bookKey)), last: res.docs.at(-1) || null };
 }
 
+// ----- friends (2.2): requests by @handle, two-edge friendships, friends-only activity cards -----
+
+export async function uidForHandle(handle) {
+  const { db, fs } = await load();
+  const s = await fs.getDoc(fs.doc(db, 'handles', handle));
+  return s.exists() ? s.data().uid : null;
+}
+
+export async function friendRequests(me) {
+  const { db, fs } = await load();
+  const col = fs.collection(db, 'friendRequests');
+  const [inc, out] = await Promise.all([
+    fs.getDocs(fs.query(col, fs.where('to', '==', me), fs.limit(50))),
+    fs.getDocs(fs.query(col, fs.where('from', '==', me), fs.limit(50))),
+  ]);
+  const toObj = (s) => ({ id: s.id, ...s.data() });
+  return { incoming: inc.docs.map(toObj), outgoing: out.docs.map(toObj) };
+}
+
+export async function sendFriendRequest(me, myHandle, toUid, toHandle) {
+  const { db, fs } = await load();
+  await fs.setDoc(fs.doc(db, 'friendRequests', `${me}_${toUid}`), { from: me, to: toUid, fromHandle: myHandle, toHandle, createdAt: fs.serverTimestamp() });
+}
+
+// One batch: consume the request and create both edges (the rules check all three together).
+export async function acceptFriendRequest(me, myHandle, req) {
+  const { db, fs } = await load();
+  const b = fs.writeBatch(db);
+  b.delete(fs.doc(db, 'friendRequests', `${req.from}_${me}`));
+  b.set(fs.doc(db, 'friends', me, 'list', req.from), { handle: req.fromHandle, since: fs.serverTimestamp() });
+  b.set(fs.doc(db, 'friends', req.from, 'list', me), { handle: myHandle, since: fs.serverTimestamp() });
+  await b.commit();
+  // If you both pressed Add at the same moment, your own request to them is left over: drop it.
+  await fs.deleteDoc(fs.doc(db, 'friendRequests', `${me}_${req.from}`)).catch(() => {});
+}
+
+export async function deleteFriendRequest(id) {
+  const { db, fs } = await load();
+  await fs.deleteDoc(fs.doc(db, 'friendRequests', id));
+}
+
+export async function friendsList(me) {
+  const { db, fs } = await load();
+  const res = await fs.getDocs(fs.query(fs.collection(db, 'friends', me, 'list'), fs.limit(200)));
+  return res.docs.map((s) => ({ uid: s.id, handle: s.data().handle })).sort((a, b) => a.handle.localeCompare(b.handle));
+}
+
+export async function unfriend(me, other) {
+  const { db, fs } = await load();
+  const b = fs.writeBatch(db);
+  b.delete(fs.doc(db, 'friends', me, 'list', other));
+  b.delete(fs.doc(db, 'friends', other, 'list', me));
+  await b.commit();
+}
+
+export async function writeActivity(me, card) {
+  const { db, fs } = await load();
+  await fs.setDoc(fs.doc(db, 'activity', me), { ...card, updatedAt: fs.serverTimestamp() });
+}
+
+export async function friendActivity(uid) {
+  const { db, fs } = await load();
+  const s = await fs.getDoc(fs.doc(db, 'activity', uid));
+  return s.exists() ? { uid, ...s.data(), updatedAt: s.data().updatedAt?.toMillis?.() || 0 } : null;
+}
+
 // ----- reports + admin -----
 
 export async function report(workId, reviewerUid, uid, reason) {
@@ -236,7 +302,7 @@ export async function dismissReport(id) {
   await fs.deleteDoc(fs.doc(db, 'reports', id));
 }
 
-// Delete everything public this account wrote, then the Firebase account. users/{uid} and the
+// Delete everything public this account wrote (friendships and activity card too), then the Firebase account. users/{uid} and the
 // handle stay behind on purpose: they reserve the name forever (see privacy.html).
 // Re-authenticates first with a fresh Google token: Firebase refuses user.delete() on an old
 // session, and failing that after the reviews were gone would leave the job half done.
@@ -257,5 +323,17 @@ export async function deleteMyPublicData(uid, workIds, accessToken) {
   }
   const mine = await fs.getDocs(fs.query(fs.collection(db, 'reports'), fs.where('uid', '==', uid)));
   for (const d of mine.docs) await fs.deleteDoc(d.ref);
+  // Friends stop seeing you: every friendship (both edges), every request, and your activity card.
+  for (;;) {
+    const list = await fs.getDocs(fs.query(fs.collection(db, 'friends', uid, 'list'), fs.limit(100)));
+    if (list.empty) break;
+    for (const d of list.docs) await unfriend(uid, d.id);
+  }
+  for (;;) { // in pages, until none are left
+    const { incoming, outgoing } = await friendRequests(uid);
+    if (!incoming.length && !outgoing.length) break;
+    for (const r of [...incoming, ...outgoing]) await fs.deleteDoc(fs.doc(db, 'friendRequests', r.id));
+  }
+  await fs.deleteDoc(fs.doc(db, 'activity', uid));
   await auth.currentUser.delete();
 }

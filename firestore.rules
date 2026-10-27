@@ -193,6 +193,8 @@ service cloud.firestore {
         && validHandle(request.resource.data.toHandle)
         && get(doc('handles/' + request.resource.data.toHandle)).data.uid == request.resource.data.to
         && !exists(doc('friends/' + me() + '/list/' + request.resource.data.to))
+        // they already asked you: accept theirs instead (crossed requests would leave one stale)
+        && !exists(doc('friendRequests/' + request.resource.data.to + '_' + me()))
         && request.resource.data.createdAt == request.time;
       allow get, list: if signedIn() && (resource.data.from == me() || resource.data.to == me());
       // decline or accept: only the receiver; cancel: only the sender. Never updated.
@@ -234,6 +236,7 @@ service cloud.firestore {
         && request.resource.data.streak is int && request.resource.data.streak >= 0 && request.resource.data.streak <= 100000
         && request.resource.data.finishedCount is int && request.resource.data.finishedCount >= 0 && request.resource.data.finishedCount <= 100000
         && request.resource.data.updatedAt == request.time;
+      allow delete: if signedIn() && uid == me(); // "delete my public data"
     }
   }
 }

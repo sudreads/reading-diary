@@ -608,3 +608,21 @@ VERDICT: REVISE
 ### Claude's response
 Accepted: best-effort wording (the daily check-in screen on open is the existing fallback); quiet hours widened to 08:00-22:30 and stated; getTags() reconciliation on every launch; "delivery may be blocked" wording + test button; decision and reservation in one readwrite transaction; worker opens the DB without a version and aborts if it would create it (never migrates; page already closes on versionchange); generic lock-screen text (streak count, no book title); one shared day/streak module - the service worker becomes a module worker importing js/derive.js.
 Rejected: manual clock-change / timezone-travel handling (one reminder per local calendar day is the intended behaviour; worst case is one extra or one missed reminder).
+
+## 2.2 Friends - code review + post-build inspection (2026-10-27)
+
+**Claude code-review (high), 6 findings, all fixed:** account deletion left friend edges, requests and
+the activity card (added `activity` delete rule + cleanup in deleteMyPublicData); friends' streaks never
+lapsed (`liveStreak` zeroes a card not updated since yesterday); Me refetched friends on every render
+(60 s cache, cleared by your own actions); Decline/Cancel errors were silent; activity cache not keyed by
+account; empty Friends heading after the last unfriend. Also fixed while testing: three latent "false"
+texts (new `fill()` in dom.js), Explore not redrawing once the account check settles, privacy page
+(friends-only section; diary is in the account since 2.0, with the console caveat).
+
+**Codex post-build inspection (fresh read-only session, inlined diff), 4 findings:**
+1. Crossed requests (A->B and B->A) leave one stale - **accepted**: rule refuses a request when the reverse
+   exists; accept also drops a leftover reverse request.
+2. Deletion clears only the first 50 requests - **accepted**: loops until none remain.
+3. Request lists capped at 50 in the UI - **rejected**: 100-person invite-only beta; noted.
+4. Explore shows first 50 friends - **rejected**: deliberate read-cost cap from PLAN-v2.
+Rounds used: 1 (fixes are small and covered by rules tests). Rules 37/37, unit 63/63.

@@ -1,12 +1,12 @@
 // Fallback for browsers without module service workers (older Safari/Firefox): the same offline
 // shell as sw.js, without reading reminders (those need the module worker's shared logic).
 // Keep the CACHE name and SHELL list in step with sw.js.
-const CACHE = 'rd-v12';
+const CACHE = 'rd-v13';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/caveat-500-latin.woff2',
   'js/app.js', 'js/config.js', 'js/derive.js', 'js/dom.js', 'js/drive.js', 'js/merge.js', 'js/notebook.js',
-  'js/firebase.js', 'js/reviews.js', 'js/social.js', 'js/signout.js', 'js/dedupe.js', 'js/cloud.js', 'js/catalog.js', 'js/explore.js',
+  'js/firebase.js', 'js/reviews.js', 'js/social.js', 'js/signout.js', 'js/dedupe.js', 'js/cloud.js', 'js/catalog.js', 'js/explore.js', 'js/friends.js', 'js/activity.js',
   'js/reminder.js', 'js/rank.js', 'js/rev.js', 'js/store.js', 'js/sync.js', 'js/syncer.js', 'js/validate.js',
 ];
 
