@@ -385,3 +385,4 @@ body.gated .tabbar, body.gated #pill { display: none; }
 .session-note { max-width: 300px; }
 .checkin-card .stack.wide { width: 100%; }
 .session-again { margin-top: 10px; }
+.day.away .dot { background: transparent; border: 2px dashed var(--accent); box-sizing: border-box; }

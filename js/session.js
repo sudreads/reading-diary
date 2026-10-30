@@ -26,17 +26,18 @@ export const clock = (ms) => {
 let open = false;
 export const sessionOpen = () => open;
 
-// complete(): saves the session, returns { id, streak }.
+// complete(): saves the session, returns { id, streak, note? }.
+// durationMs: length of the countdown. stopped: what stopping early costs, in one sentence.
 // addMinutes(id, minutes): records how long "Keep going" ran. Both are owned by app.js.
 // onClose(finished): finished is false when he stopped or left before 0:00.
-export function readingSession(book, { cover, complete, addMinutes, openNotebook, onClose }) {
+export function readingSession(book, { cover, complete, addMinutes, openNotebook, onClose, durationMs = SESSION_MS, stopped = 'Today isn\'t counted yet.' }) {
   if (open) return;
   open = true;
   const timer = createTimer();
   let phase = 'counting'; // counting -> done -> extra -> closed
   let locked = false, lock = null, epoch = 0, tick = null, savedId = null;
 
-  const time = h('div', { class: 'session-time', role: 'timer' }, clock(SESSION_MS));
+  const time = h('div', { class: 'session-time', role: 'timer' }, clock(durationMs));
   const note = h('p', { class: 'muted small session-note' }, 'Read until the timer ends. Leaving the app stops the session.');
   const stopBtn = h('button', { class: 'btn wide big-btn', onclick: stop }, 'Stop');
   const card = h('div', { class: 'checkin-card' },
@@ -63,7 +64,7 @@ export function readingSession(book, { cover, complete, addMinutes, openNotebook
 
   function paint() {
     if (phase === 'counting') {
-      const left = SESSION_MS - timer.elapsed();
+      const left = durationMs - timer.elapsed();
       time.textContent = clock(left);
       if (left <= 0) finish();
     } else if (phase === 'extra') {
@@ -88,22 +89,22 @@ export function readingSession(book, { cover, complete, addMinutes, openNotebook
 
   function stop() {
     if (phase !== 'counting') return;
-    if (!confirm('Stop now? Today won\'t count.')) return;
+    if (!confirm(`Stop now? ${stopped}`)) return;
     if (phase !== 'counting') return; // the timer ran out while he was deciding
     close();
-    toast('Session stopped. Today isn\'t counted yet.');
+    toast(`Session stopped. ${stopped}`);
   }
 
   async function finish() {
     phase = 'done';
     timer.pause();
     clearInterval(tick);
-    let st = null;
-    try { const r = await complete(); savedId = r?.id || null; st = r?.streak ?? null; }
+    let st = null, extraNote = '';
+    try { const r = await complete(); savedId = r?.id || null; st = r?.streak ?? null; extraNote = r?.note || ''; }
     catch (e) { close(); toast(`Couldn't save (${e.message})`); return; }
     if (phase === 'closed') return;
     time.textContent = st ? `🔥 ${st}` : '✓';
-    note.textContent = st ? `${st} day${st === 1 ? '' : 's'} in a row! Today counts.` : 'Today is already counted.';
+    note.textContent = extraNote || (st ? `${st} day${st === 1 ? '' : 's'} in a row! Today counts.` : 'Today is already counted.');
     stopBtn.replaceWith(h('div', { class: 'stack wide' },
       h('button', { class: 'btn primary wide big-btn', onclick: () => { close(); openNotebook(); } }, '📓 Open notebook'),
       h('button', { class: 'btn wide big-btn', onclick: keepGoing }, 'Keep going')));
@@ -124,13 +125,13 @@ export function readingSession(book, { cover, complete, addMinutes, openNotebook
     timer.pause();
     const minutes = Math.min(1440, Math.floor(timer.elapsed() / 60000));
     close();
-    if (savedId && minutes > 5) {
+    if (savedId && minutes > durationMs / 60000) {
       try { await addMinutes(savedId, minutes); toast(`${minutes} minutes today 📚`); } catch { /* the day already counts */ }
     }
   }
 
   function leave() {
-    if (phase === 'counting' && locked) { close(); toastWhenBack('Session stopped: you left the app. Today isn\'t counted yet.'); }
+    if (phase === 'counting' && locked) { close(); toastWhenBack(`Session stopped: you left the app. ${stopped}`); }
     else if (phase === 'counting') timer.pause();
     else if (phase === 'extra' && locked) endExtra();
     else if (phase === 'extra') timer.pause();

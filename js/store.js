@@ -116,6 +116,29 @@ export function save(kind, rec) {
   }, withRank ? 'both' : 'content');
 }
 
+// Several records in one transaction: all saved or none. Each needs its id.
+export async function saveMany(kind, recs) {
+  const tx = db.transaction([kind, 'meta'], 'readwrite');
+  const store = tx.objectStore(kind), meta = tx.objectStore('meta');
+  const [hi, gen, dev, dirtyRow, ...prevs] = await Promise.all([
+    req(meta.get('highestT')), req(meta.get('mutationGen')), req(meta.get('deviceId')), req(meta.get('dirty')), ...recs.map((r) => req(store.get(r.id))),
+  ]);
+  let t = hi ? hi.value : 0;
+  const dirty = dirtyRow ? dirtyRow.value : {};
+  recs.forEach((rec, i) => {
+    const rev = nextRev(t, dev.value);
+    t = rev.t;
+    const next = { ...prevs[i], ...rec, rev };
+    store.put(next);
+    for (const d of toDocs(kind, next, 'content')) dirty[d.rid] = d.t;
+  });
+  meta.put({ key: 'dirty', value: dirty });
+  meta.put({ key: 'highestT', value: t });
+  meta.put({ key: 'mutationGen', value: (gen ? gen.value : 0) + 1 });
+  await done(tx);
+  emit(kind);
+}
+
 export function setRank(id, rank) {
   return write('blocks', id, (prev, rev) => ({ ...prev, rank, rankRev: rev }), 'rank');
 }

@@ -23,6 +23,8 @@ test("sw.js's copy of the reminder logic agrees with the app's", () => {
     { sessions: [], remindersOn: false, lastReminder: null, now: new Date(2026, 9, 27, 18) },
     { sessions: [], remindersOn: true, lastReminder: null, now: new Date(2026, 9, 27, 23) },
     { sessions: [s('2026-10-26', { read: true, deleted: true })], remindersOn: true, lastReminder: null, now: new Date(2026, 9, 27, 9) },
+    { sessions: [s('2026-10-27', { away: true }), s('2026-10-26', { read: true })], remindersOn: true, lastReminder: null, now: new Date(2026, 9, 27, 18) },
+    { sessions: [s('2026-10-26', { away: true }), s('2026-10-25', { read: true }), s('2026-10-24', { read: true })], remindersOn: true, lastReminder: null, now: new Date(2026, 9, 27, 18) },
   ];
   for (const c of cases) assert.deepEqual(sw.decideReminder(c), decideReminder(c));
   for (const n of [0, 1, 7]) assert.deepEqual(sw.reminderText(n), reminderText(n));

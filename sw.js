@@ -17,11 +17,14 @@ function addDays(dateStr, n) {
 function readingDates(sessions) {
   return new Set(sessions.filter((r) => !r.deleted).filter((s) => s.read === true || (s.pages || 0) > 0 || (s.minutes || 0) > 0).map((s) => s.date));
 }
+function awayDates(sessions) {
+  return new Set(sessions.filter((r) => !r.deleted).filter((s) => s.away === true).map((s) => s.date));
+}
 function streak(sessions, today = localDate()) {
-  const dates = readingDates(sessions);
-  let day = dates.has(today) ? today : addDays(today, -1);
+  const dates = readingDates(sessions), away = awayDates(sessions);
+  let day = dates.has(today) || away.has(today) ? today : addDays(today, -1);
   let n = 0;
-  while (dates.has(day)) { n++; day = addDays(day, -1); }
+  while (dates.has(day) || away.has(day)) { if (dates.has(day)) n++; day = addDays(day, -1); }
   return n;
 }
 function decideReminder({ sessions, remindersOn, lastReminder, now = new Date() }) {
@@ -31,6 +34,7 @@ function decideReminder({ sessions, remindersOn, lastReminder, now = new Date() 
   const today = localDate(now);
   if (lastReminder === today) return { send: false, why: 'already-today' };
   if (readingDates(sessions).has(today)) return { send: false, why: 'read-today' };
+  if (awayDates(sessions).has(today)) return { send: false, why: 'away' };
   return { send: true, today, streak: streak(sessions, today) };
 }
 function reminderText(streakDays) {
@@ -40,7 +44,7 @@ function reminderText(streakDays) {
 }
 // ---- END copy ----
 
-const CACHE = 'rd-v18';
+const CACHE = 'rd-v19';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/caveat-500-latin.woff2',

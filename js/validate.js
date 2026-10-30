@@ -33,7 +33,7 @@ const checks = {
     (r.drawingId === undefined || r.drawingId === null || UUID.test(r.drawingId)) &&
     (r.rankRev === undefined || isRev(r.rankRev)),
   sessions: (r) => typeof r.bookId === 'string' && UUID.test(r.bookId) && typeof r.date === 'string' &&
-    DATE.test(r.date) && (r.read === undefined || typeof r.read === 'boolean') && num(r.pages, 0, 10000) && num(r.minutes, 0, 1440) && num(r.toPage, 0, 100000),
+    DATE.test(r.date) && (r.read === undefined || typeof r.read === 'boolean') && (r.away === undefined || typeof r.away === 'boolean') && num(r.pages, 0, 10000) && num(r.minutes, 0, 1440) && num(r.toPage, 0, 100000),
 };
 
 // maxT: revisions after this are forged or from a broken clock and are rejected, not clamped.

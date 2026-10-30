@@ -1,7 +1,7 @@
 import * as store from './store.js';
 import * as syncer from './syncer.js';
 import { h, s, clear, fill, toast, sheet, ago, confetti } from './dom.js';
-import { streak, readingDates, lessonOfDay, localDate, addDays } from './derive.js';
+import { streak, readingDates, awayDates, farFromHome, awayRecord, AWAY_MAX_DAYS, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
 import { isConfigured, hasToken as hasDriveToken } from './drive.js';
@@ -13,7 +13,7 @@ import { handleSheet, adminPanel } from './reviews.js';
 import { friendsCard, schedulePublish } from './friends.js';
 import { readingSession, sessionOpen } from './session.js';
 
-const VERSION = '2.3.3';
+const VERSION = '2.4.0';
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'explore', label: 'Explore', icon: '🔍' },
@@ -106,7 +106,7 @@ function maybeCheckin() {
   if (checkinOpen || sessionOpen() || ui.gated || busy.current() || document.getElementById('sheets').children.length) return;
   const book = currentBook();
   const today = localDate();
-  if (!book || readingDates(data.sessions).has(today) || notYetToday()) return;
+  if (!book || readingDates(data.sessions).has(today) || awayDates(data.sessions).has(today) || notYetToday()) return;
   checkinOpen = true;
   const close = () => { checkinOpen = false; wrap.remove(); render(); };
   const st = streak(data.sessions, today);
@@ -206,6 +206,8 @@ function nowScreen() {
   const st = streak(data.sessions, today);
   const dates = readingDates(data.sessions);
   const readToday = dates.has(today);
+  const away = awayDates(data.sessions);
+  const trip = farFromHome(data.sessions, today);
   const book = currentBook();
   const lesson = lessonOfDay(data.blocks, today);
 
@@ -221,8 +223,9 @@ function nowScreen() {
   const streakCard = h('div', { class: 'card streak-card' },
     h('div', { class: 'flame-big', 'aria-hidden': 'true' }, st ? '🔥' : '🌱'),
     h('div', { class: 'big' }, st === 1 ? '1 day streak' : `${st} day streak`),
-    h('div', { class: 'week', 'aria-label': 'Last 7 days' }, week.map((d) => h('div', { class: `day${dates.has(d) ? ' on' : ''}${d === today ? ' today' : ''}` },
-      h('span', { class: 'dot' }), h('span', { class: 'muted tiny' }, new Date(`${d}T12:00`).toLocaleDateString(undefined, { weekday: 'narrow' }))))));
+    h('div', { class: 'week', 'aria-label': 'Last 7 days' }, week.map((d) => h('div', { class: `day${dates.has(d) ? ' on' : away.has(d) ? ' away' : ''}${d === today ? ' today' : ''}` },
+      h('span', { class: 'dot' }), h('span', { class: 'muted tiny' }, new Date(`${d}T12:00`).toLocaleDateString(undefined, { weekday: 'narrow' }))))),
+    trip.until && h('p', { class: 'muted small' }, `🧳 Far from home until ${shortDate(trip.until)}. Your streak is safe.`));
 
   return h('div', { class: 'stack' },
     streakCard,
@@ -238,12 +241,17 @@ function currentBookCard(book, readToday) {
   let question;
   if (readToday) {
     const today = localDate();
-    const undoable = data.sessions.some((s) => s.bookId === book.id && s.date === today && s.read === true);
+    // Not during a trip: the read that started it holds the streak across the away days.
+    const undoable = !farFromHome(data.sessions, today).until && data.sessions.some((s) => s.bookId === book.id && s.date === today && s.read === true);
     question = h('div', { class: 'checkin done' },
       h('p', null, '✓ You read today.'),
       undoable && h('button', { class: 'link-btn', onclick: () => undoToday(book) }, 'Undo'));
     question = h('div', null, question,
       h('button', { class: 'btn wide session-again', onclick: () => startSession(book) }, '⏱ Start a reading session'));
+  } else if (awayDates(data.sessions).has(localDate())) {
+    question = h('div', { class: 'checkin' },
+      h('p', { class: 'muted' }, '🧳 Far from home today. Your streak is safe.'),
+      h('button', { class: 'btn wide', onclick: () => startSession(book) }, '⏱ Start a reading session'));
   } else if (notYetToday()) {
     question = h('div', { class: 'checkin' },
       h('p', { class: 'muted' }, 'No problem - start a session when you\'re ready to read.'),
@@ -270,15 +278,24 @@ function currentBookCard(book, readToday) {
 }
 
 // Today counts only after a 5-minute session runs down in the app (session.js).
-function startSession(book) {
+// awayDays: this is the 10-minute read that switches on Far from home for that many days.
+function startSession(book, { awayDays = 0 } = {}) {
+  const minutes = awayDays ? 10 : 5;
   readingSession(book, {
     cover,
+    durationMs: minutes * 60 * 1000,
+    stopped: awayDays ? 'Far from home won\'t be switched on.' : undefined,
     complete: async () => {
       const today = localDate(); // the date it finished, even if it started before midnight
       // Saved even if today already counts (a second session, another tab): the streak counts days,
       // and the record keeps this session's minutes.
-      const rec = await store.save('sessions', { bookId: book.id, date: today, read: true, pages: 0, minutes: 5 });
-      return { id: rec.id, streak: streak(await store.list('sessions'), today) };
+      const read = { id: crypto.randomUUID(), bookId: book.id, date: today, read: true, pages: 0, minutes };
+      // Decided now, not when the sheet opened: the timer may cross midnight or another phone may have started a trip.
+      const allowed = awayDays > 0 && farFromHome(await store.list('sessions'), today).canStart;
+      const days = allowed ? Array.from({ length: awayDays }, (_, i) => awayRecord(book.id, addDays(today, i + 1))) : [];
+      await store.saveMany('sessions', [read, ...days]);
+      const note = !awayDays ? '' : allowed ? `Far from home is on until ${shortDate(days.at(-1).date)}. Your streak is safe.` : 'Today counts, but Far from home wasn\'t started: it\'s not available right now.';
+      return { id: read.id, streak: streak(await store.list('sessions'), today), note };
     },
     addMinutes: async (id, minutes) => {
       if (await store.get('sessions', id)) await store.save('sessions', { id, minutes }); // undone meanwhile: leave it
@@ -286,10 +303,37 @@ function startSession(book) {
     openNotebook: () => openMyBook(book.id),
     onClose: (finished) => {
       // Stopped or left early: don't ask "Did you read today?" straight away again.
-      if (!finished) try { localStorage.setItem('rd-notyet', localDate()); } catch { /* ignore */ }
+      if (!finished && !awayDays) try { localStorage.setItem('rd-notyet', localDate()); } catch { /* ignore */ }
       pendingRender = true; maybeRender();
     },
   });
+}
+
+const shortDate = (d) => new Date(`${d}T12:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+// Far from home: kept out of the way on purpose, at the very bottom of Me.
+async function farFromHomeSheet() {
+  const today = localDate();
+  const sessions = await store.list('sessions');
+  const trip = farFromHome(sessions, today);
+  const book = currentBook();
+  const body = h('div', { class: 'form' });
+  const close = sheet('Far from home', body);
+  if (trip.until) {
+    body.append(h('p', null, `🧳 You're away until ${shortDate(trip.until)}. Your streak is safe.`),
+      h('button', { class: 'btn', onclick: async () => {
+        for (const s of sessions) if (s.away === true && !s.deleted && s.date >= today) await store.remove('sessions', s.id);
+        close(); toast('Welcome back!');
+      } }, 'I\'m back early'));
+    return;
+  }
+  body.append(h('p', null, 'Going somewhere you can\'t read? Pick the days ahead and your streak waits for you. Those days don\'t add to it.'));
+  if (!trip.canStart) { body.append(h('p', { class: 'muted small' }, `You can use this again from ${shortDate(trip.nextAllowed)}.`)); return; }
+  if (!book) { body.append(h('p', { class: 'muted small' }, 'Start reading a book first.')); return; }
+  const days = h('select', { 'aria-label': 'Days away' }, Array.from({ length: AWAY_MAX_DAYS }, (_, i) => h('option', { value: String(i + 1) }, `${i + 1} day${i ? 's' : ''}`)));
+  body.append(days,
+    h('p', { class: 'muted small' }, 'Starts tomorrow. To switch it on, read for 10 minutes now. After a trip you wait 14 days before the next one.'),
+    h('button', { class: 'btn primary', onclick: () => { const awayDays = Number(days.value); close(); startSession(book, { awayDays }); } }, 'Read 10 minutes to start'));
 }
 
 async function undoToday(book) {
@@ -558,6 +602,7 @@ function settingsScreen() {
         h('details', null, h('summary', null, 'Sync log'),
           logEntries.length ? h('ul', { class: 'log' }, logEntries.map((e) => h('li', null, `${new Date(e.time).toLocaleString()} · ${e.op} · ${e.ok ? 'ok' : 'failed'}${e.code ? ` · ${e.code}` : ''}`))) : h('p', { class: 'muted small' }, 'Nothing yet.'),
           h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(JSON.stringify(logEntries, null, 1)).then(() => toast('Copied')) }, 'Copy log'))),
+      h('p', { class: 'center' }, h('button', { class: 'link-btn muted small', onclick: farFromHomeSheet }, 'Far from home?')),
       h('p', { class: 'muted small center' }, `Reading Diary ${VERSION}`)].filter(Boolean));
   })();
   return box;
@@ -800,7 +845,7 @@ function remindersCard() {
     fill(box,
       h('h2', null, 'Reading reminders'),
       h('label', { class: 'switch-row' }, sw, h('span', null, h('strong', null, 'Remind me to read'), h('span', { class: 'muted small block' }, state))),
-      h('p', { class: 'muted small' }, 'Chrome decides the exact time (roughly daily, more reliable the more you use the app). Never at night, at most once a day, and only on days you haven\'t read. Opening the app always asks "Did you read today?" too.'),
+      h('p', { class: 'muted small' }, 'Chrome decides the exact time (roughly daily, more reliable the more you use the app). Never at night, at most once a day, and only on days you haven\'t read. Opening the app asks "Did you read today?" too.'),
       st.notif === 'granted' && h('button', { class: 'btn small', onclick: async () => {
         const reg = await navigator.serviceWorker.ready;
         await reg.showNotification('📖 Test reminder', { body: 'This is what a reading reminder looks like.', tag: 'read-reminder-test', icon: 'icons/icon-192.png' });

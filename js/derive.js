@@ -17,12 +17,34 @@ export function readingDates(sessions) {
   return new Set(live(sessions).filter((s) => s.read === true || (s.pages || 0) > 0 || (s.minutes || 0) > 0).map((s) => s.date));
 }
 
+// Far from home: days chosen ahead that keep the streak without adding to it.
+export function awayDates(sessions) {
+  return new Set(live(sessions).filter((s) => s.away === true).map((s) => s.date));
+}
+
+export const AWAY_MAX_DAYS = 14; // longest trip
+export const AWAY_COOLDOWN_DAYS = 14; // first new start = last away day + this
+
+// Works on the set of dates, so trips started on two offline phones still read sensibly.
+export function farFromHome(sessions, today = localDate()) {
+  const last = [...awayDates(sessions)].sort().at(-1);
+  if (!last) return { until: null, nextAllowed: null, canStart: true };
+  const nextAllowed = addDays(last, AWAY_COOLDOWN_DAYS);
+  return { until: last >= today ? last : null, nextAllowed, canStart: today >= nextAllowed };
+}
+
+// One fixed id per date, so the same day from two phones is one record and "back early" clears it everywhere.
+export function awayRecord(bookId, date) {
+  return { id: `f4f4f4f4-0000-4000-8000-0000${date.replace(/-/g, '')}`, bookId, date, away: true, read: false, pages: 0, minutes: 0, deleted: false };
+}
+
 // Consecutive days with reading, ending today - or yesterday, since today is not over yet.
+// Away days are stepped over without counting.
 export function streak(sessions, today = localDate()) {
-  const dates = readingDates(sessions);
-  let day = dates.has(today) ? today : addDays(today, -1);
+  const dates = readingDates(sessions), away = awayDates(sessions);
+  let day = dates.has(today) || away.has(today) ? today : addDays(today, -1);
   let n = 0;
-  while (dates.has(day)) { n++; day = addDays(day, -1); }
+  while (dates.has(day) || away.has(day)) { if (dates.has(day)) n++; day = addDays(day, -1); }
   return n;
 }
 

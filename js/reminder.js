@@ -1,5 +1,5 @@
 // The reading-reminder decision, shared by the service worker and the tests.
-import { readingDates, streak, localDate } from './derive.js';
+import { readingDates, awayDates, streak, localDate } from './derive.js';
 
 export const QUIET_FROM = 22.5; // 22:30
 export const QUIET_UNTIL = 8;   // 08:00
@@ -12,6 +12,7 @@ export function decideReminder({ sessions, remindersOn, lastReminder, now = new 
   const today = localDate(now);
   if (lastReminder === today) return { send: false, why: 'already-today' };
   if (readingDates(sessions).has(today)) return { send: false, why: 'read-today' };
+  if (awayDates(sessions).has(today)) return { send: false, why: 'away' };
   return { send: true, today, streak: streak(sessions, today) };
 }
 
