@@ -1,7 +1,7 @@
 import * as store from './store.js';
 import * as syncer from './syncer.js';
 import { h, s, clear, fill, toast, sheet, ago, confetti, icon } from './dom.js';
-import { streak, readingDates, awayDates, farFromHome, awayRecord, AWAY_MAX_DAYS, lessonOfDay, localDate, addDays } from './derive.js';
+import { streak, bestStreak, streakNudge, MILESTONES, readingDates, awayDates, farFromHome, awayRecord, AWAY_MAX_DAYS, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
 import { isConfigured, hasToken as hasDriveToken } from './drive.js';
@@ -14,7 +14,7 @@ import { friendsCard, schedulePublish } from './friends.js';
 import { readingSession, sessionOpen } from './session.js';
 import { eraseMessage } from './erase.js';
 
-const VERSION = '2.6.1';
+const VERSION = '2.7.0';
 const TABS = [
   { id: 'home', label: 'Home', icon: 'home' },
   { id: 'explore', label: 'Explore', icon: 'search' },
@@ -225,14 +225,26 @@ function nowScreen() {
     h('div', { class: 'streak-line' },
       h('span', { class: 'streak-num' }, String(st)),
       h('span', { class: 'streak-label' }, 'day streak'),
-      h('span', { 'aria-hidden': 'true' }, st ? '🔥' : '🌱')),
+      h('span', { class: 'streak-flame', 'aria-hidden': 'true' }, st ? '🔥' : '🌱')),
+    h('p', { class: 'streak-nudge' }, streakNudge({ streak: st, readToday, awayToday: away.has(today), hour: new Date().getHours() })),
     h('div', { class: 'week', 'aria-label': 'Last 7 days' }, week.map((d) => h('div', { class: `day${dates.has(d) ? ' on' : away.has(d) ? ' away' : ''}${d === today ? ' today' : ''}` },
       h('span', { class: 'dot' }), h('span', { class: 'muted tiny' }, new Date(`${d}T12:00`).toLocaleDateString(undefined, { weekday: 'narrow' }))))),
     trip.until && h('p', { class: 'muted small' }, `Far from home until ${shortDate(trip.until)}. Your streak is safe.`));
 
+  // Streak goals: the ones reached stay lit even after a streak ends (they count your best run).
+  const best = bestStreak(data.sessions);
+  const next = MILESTONES.find((m) => m > st);
+  const goals = h('div', { class: 'card goals' },
+    h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Streak goals'),
+      next && h('span', { class: 'muted small' }, `${next - st} day${next - st === 1 ? '' : 's'} to ${next}`)),
+    h('div', { class: 'milestones' }, MILESTONES.map((m) => h('div', { class: `milestone${best >= m ? ' got' : ''}` },
+      h('span', null, String(m)), h('span', { class: 'tiny' }, best >= m ? 'done' : 'days')))));
+
+  // The thing to do today comes straight after the streak; goals sit below it.
   return h('div', { class: 'stack' },
     streakCard,
     book ? currentBookCard(book, readToday) : nextBookCard(),
+    goals,
     book && h('button', { class: 'btn ghost wide', onclick: addBookSheet }, '+ Save a book for later'),
     lesson && h('div', { class: 'card lesson-day' },
       h('div', { class: 'eyebrow' }, 'Lesson of the day'),

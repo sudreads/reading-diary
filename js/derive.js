@@ -48,6 +48,30 @@ export function streak(sessions, today = localDate()) {
   return n;
 }
 
+// The longest run ever, counted the same way: away days are stepped over, not counted.
+export function bestStreak(sessions) {
+  const dates = readingDates(sessions), away = awayDates(sessions);
+  let best = 0;
+  for (const start of dates) {
+    if (dates.has(addDays(start, 1)) || away.has(addDays(start, 1))) continue; // not the last day of a run
+    let n = 0, day = start;
+    while (dates.has(day) || away.has(day)) { if (dates.has(day)) n++; day = addDays(day, -1); }
+    if (n > best) best = n;
+  }
+  return best;
+}
+
+export const MILESTONES = [3, 7, 14, 30, 60, 100, 365];
+
+// The one line under the streak: what today is worth. hour is the local hour, 0-23.
+export function streakNudge({ streak: n, readToday, awayToday, hour }) {
+  if (readToday) return `Done for today. Come back tomorrow for day ${n + 1}.`;
+  if (awayToday) return 'Far from home today. Your streak is safe.';
+  if (!n) return 'Read for 5 minutes today to start a streak.';
+  if (hour >= 18) return `Your ${n}-day streak ends at midnight. 5 minutes keeps it.`;
+  return `Read today to make it ${n + 1}.`;
+}
+
 export function dayTotals(sessions, date) {
   let pages = 0, minutes = 0;
   for (const s of live(sessions)) if (s.date === date) { pages += s.pages || 0; minutes += s.minutes || 0; }
