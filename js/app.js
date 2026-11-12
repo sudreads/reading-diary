@@ -14,7 +14,7 @@ import { friendsCard, schedulePublish } from './friends.js';
 import { readingSession, sessionOpen } from './session.js';
 import { eraseMessage } from './erase.js';
 
-const VERSION = '2.6.0';
+const VERSION = '2.6.1';
 const TABS = [
   { id: 'home', label: 'Home', icon: 'home' },
   { id: 'explore', label: 'Explore', icon: 'search' },
