@@ -133,7 +133,7 @@ export async function friendsActivity() {
   if (!ready()) return [];
   const uid = syncer.state.uid;
   if (activityCache.uid === uid && Date.now() - activityCache.at < 10 * 60 * 1000) return activityCache.cards;
-  const friends = (await fb.friendsList(uid)).slice(0, 50); // first 50 by name (PLAN-v2)
+  const friends = (await fb.friendsList(uid)).slice(0, 50); // first 50 by name: caps the reads per refresh
   const cards = (await Promise.all(friends.map((f) => activityOf(f.uid).catch(() => null)))).filter(Boolean)
     .sort((a, b) => b.updatedAt - a.updatedAt);
   Object.assign(activityCache, { uid, at: Date.now(), cards });

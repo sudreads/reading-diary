@@ -7,7 +7,7 @@
 
 import { cmpRev } from './rev.js';
 
-export const MAX_DOC_BYTES = 100 * 1024; // same number as PLAN-v2 and the client check
+export const MAX_DOC_BYTES = 100 * 1024; // the client refuses anything larger before it is sent
 const strip = (rec, drop) => {
   const out = {};
   for (const [k, v] of Object.entries(rec)) if (!drop.includes(k) && v !== undefined) out[k] = v;

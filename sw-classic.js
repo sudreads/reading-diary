@@ -1,7 +1,7 @@
-// Fallback for browsers without module service workers (older Safari/Firefox): the same offline
-// shell as sw.js, without reading reminders (those need the module worker's shared logic).
-// Keep the CACHE name and SHELL list in step with sw.js.
-const CACHE = 'rd-v19';
+// No longer registered by the app. Kept published because a phone last opened before 2.3.3, on a
+// browser without module workers, is still controlled by this file and reaches new versions
+// through it. Offline shell only, no reminders. Keep CACHE and SHELL in step with sw.js.
+const CACHE = 'rd-v20';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/caveat-500-latin.woff2',
