@@ -48,9 +48,9 @@ export function handleSheet(then) {
 }
 
 export function adminPanel() {
-  const box = h('div', { class: 'card' }, h('h2', null, '🛡 Admin: reports'), h('p', { class: 'muted small' }, 'Loading…'));
+  const box = h('div', { class: 'card' }, h('h2', null, 'Admin: reports'), h('p', { class: 'muted small' }, 'Loading…'));
   fb.listReports().then((reports) => {
-    box.replaceChildren(h('h2', null, '🛡 Admin: reports'),
+    box.replaceChildren(h('h2', null, 'Admin: reports'),
       reports.length ? h('div', { class: 'stack' }, reports.map((r) => {
         const row = h('div', { class: 'report-row' },
           h('div', null, h('strong', null, REPORT_REASONS[r.reason] || r.reason), h('div', { class: 'muted small' }, `Book ${r.workId} · reviewer ${r.reviewerUid.slice(0, 6)}…`)),
@@ -67,6 +67,6 @@ export function adminPanel() {
         return row;
       })) : h('p', { class: 'muted small' }, 'No open reports.'),
       h('a', { class: 'muted small', href: 'https://console.firebase.google.com/', target: '_blank', rel: 'noopener' }, 'Firebase console (usage and quota)'));
-  }).catch((e) => box.replaceChildren(h('h2', null, '🛡 Admin'), h('p', { class: 'muted small' }, `Couldn't load reports (${e.code || e.message})`)));
+  }).catch((e) => box.replaceChildren(h('h2', null, 'Admin'), h('p', { class: 'muted small' }, `Couldn't load reports (${e.code || e.message})`)));
   return box;
 }

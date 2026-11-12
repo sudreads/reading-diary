@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import * as syncer from './syncer.js';
-import { h, s, clear, fill, toast, sheet, ago, confetti } from './dom.js';
+import { h, s, clear, fill, toast, sheet, ago, confetti, icon } from './dom.js';
 import { streak, readingDates, awayDates, farFromHome, awayRecord, AWAY_MAX_DAYS, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
@@ -13,12 +13,12 @@ import { handleSheet, adminPanel } from './reviews.js';
 import { friendsCard, schedulePublish } from './friends.js';
 import { readingSession, sessionOpen } from './session.js';
 
-const VERSION = '2.4.2';
+const VERSION = '2.5.0';
 const TABS = [
-  { id: 'home', label: 'Home', icon: '🏠' },
-  { id: 'explore', label: 'Explore', icon: '🔍' },
-  { id: 'books', label: 'My Books', icon: '📚' },
-  { id: 'me', label: 'Me', icon: '👤' },
+  { id: 'home', label: 'Home', icon: 'home' },
+  { id: 'explore', label: 'Explore', icon: 'search' },
+  { id: 'books', label: 'My Books', icon: 'books' },
+  { id: 'me', label: 'Me', icon: 'person' },
 ];
 // 1.x tab names, so a remembered tab still opens somewhere sensible after the update.
 const OLD_TABS = { now: 'home', journal: 'books', trophies: 'books', settings: 'me' };
@@ -110,12 +110,12 @@ function maybeCheckin() {
   checkinOpen = true;
   const close = () => { checkinOpen = false; wrap.remove(); render(); };
   const st = streak(data.sessions, today);
-  const wrap = h('div', { class: 'checkin-screen', role: 'dialog', 'aria-label': 'Did you read today?' },
+  const wrap = h('div', { class: 'checkin-screen', role: 'dialog', 'aria-label': 'Ready to read?' },
     h('div', { class: 'checkin-card' },
       h('div', { class: 'flame-big', 'aria-hidden': 'true' }, st ? '🔥' : '🌱'),
       h('div', { class: 'muted' }, st ? `${st} day streak` : 'Start a streak today'),
       cover(book),
-      h('h1', null, 'Did you read today?'),
+      h('h1', null, 'Ready to read?'),
       h('p', { class: 'muted' }, book.title),
       h('button', { class: 'btn primary wide big-btn', onclick: () => { close(); startSession(book); } }, 'Start reading session'),
       h('button', { class: 'btn wide big-btn', onclick: () => {
@@ -221,18 +221,20 @@ function nowScreen() {
 
   const week = Array.from({ length: 7 }, (_, i) => addDays(today, i - 6));
   const streakCard = h('div', { class: 'card streak-card' },
-    h('div', { class: 'flame-big', 'aria-hidden': 'true' }, st ? '🔥' : '🌱'),
-    h('div', { class: 'big' }, st === 1 ? '1 day streak' : `${st} day streak`),
+    h('div', { class: 'streak-line' },
+      h('span', { class: 'streak-num' }, String(st)),
+      h('span', { class: 'streak-label' }, 'day streak'),
+      h('span', { 'aria-hidden': 'true' }, st ? '🔥' : '🌱')),
     h('div', { class: 'week', 'aria-label': 'Last 7 days' }, week.map((d) => h('div', { class: `day${dates.has(d) ? ' on' : away.has(d) ? ' away' : ''}${d === today ? ' today' : ''}` },
       h('span', { class: 'dot' }), h('span', { class: 'muted tiny' }, new Date(`${d}T12:00`).toLocaleDateString(undefined, { weekday: 'narrow' }))))),
-    trip.until && h('p', { class: 'muted small' }, `🧳 Far from home until ${shortDate(trip.until)}. Your streak is safe.`));
+    trip.until && h('p', { class: 'muted small' }, `Far from home until ${shortDate(trip.until)}. Your streak is safe.`));
 
   return h('div', { class: 'stack' },
     streakCard,
     book ? currentBookCard(book, readToday) : nextBookCard(),
     book && h('button', { class: 'btn ghost wide', onclick: addBookSheet }, '+ Save a book for later'),
     lesson && h('div', { class: 'card lesson-day' },
-      h('div', { class: 'eyebrow' }, '💡 Lesson of the day'),
+      h('div', { class: 'eyebrow' }, 'Lesson of the day'),
       h('p', { class: 'lesson-text' }, lesson.text),
       h('div', { class: 'muted' }, `from ${bookTitle(lesson.bookId)}`)));
 }
@@ -244,21 +246,21 @@ function currentBookCard(book, readToday) {
     // Not during a trip: the read that started it holds the streak across the away days.
     const undoable = !farFromHome(data.sessions, today).until && data.sessions.some((s) => s.bookId === book.id && s.date === today && s.read === true);
     question = h('div', { class: 'checkin done' },
-      h('p', null, '✓ You read today.'),
+      h('p', null, 'You read today.'),
       undoable && h('button', { class: 'link-btn', onclick: () => undoToday(book) }, 'Undo'));
     question = h('div', null, question,
-      h('button', { class: 'btn wide session-again', onclick: () => startSession(book) }, '⏱ Start a reading session'));
+      h('button', { class: 'btn wide session-again', onclick: () => startSession(book) }, 'Start a reading session'));
   } else if (awayDates(data.sessions).has(localDate())) {
     question = h('div', { class: 'checkin' },
-      h('p', { class: 'muted' }, '🧳 Far from home today. Your streak is safe.'),
-      h('button', { class: 'btn wide', onclick: () => startSession(book) }, '⏱ Start a reading session'));
+      h('p', { class: 'muted' }, 'Far from home today. Your streak is safe.'),
+      h('button', { class: 'btn wide', onclick: () => startSession(book) }, 'Start a reading session'));
   } else if (notYetToday()) {
     question = h('div', { class: 'checkin' },
       h('p', { class: 'muted' }, 'No problem - start a session when you\'re ready to read.'),
       h('button', { class: 'btn primary wide', onclick: () => startSession(book) }, 'Start reading session'));
   } else {
     question = h('div', { class: 'checkin' },
-      h('p', { class: 'question' }, 'Did you read today?'),
+      h('p', { class: 'question' }, 'Ready to read today?'),
       h('div', { class: 'actions' },
         h('button', { class: 'btn primary', onclick: () => startSession(book) }, 'Start reading session'),
         h('button', { class: 'btn', onclick: () => { try { localStorage.setItem('rd-notyet', localDate()); } catch { /* ignore */ } render(); } }, 'Not yet')));
@@ -272,9 +274,9 @@ function currentBookCard(book, readToday) {
         book.author && h('div', { class: 'muted' }, book.author))),
     question,
     h('div', { class: 'actions' },
-      h('button', { class: 'btn', onclick: () => openMyBook(book.id) }, '📓 Notebook'),
+      h('button', { class: 'btn', onclick: () => openMyBook(book.id) }, 'Notebook'),
       fbConfigured() && bookKeyOf(book) && h('button', { class: 'btn', onclick: () => openBookPageFor(book) }, '★ Reviews'),
-      h('button', { class: 'btn', onclick: () => finishSheet(book) }, 'Finished 🏆')));
+      h('button', { class: 'btn', onclick: () => finishSheet(book) }, 'Finished')));
 }
 
 // Today counts only after a 5-minute session runs down in the app (session.js).
@@ -320,7 +322,7 @@ async function farFromHomeSheet() {
   const body = h('div', { class: 'form' });
   const close = sheet('Far from home', body);
   if (trip.until) {
-    body.append(h('p', null, `🧳 You're away until ${shortDate(trip.until)}. Your streak is safe.`),
+    body.append(h('p', null, `You're away until ${shortDate(trip.until)}. Your streak is safe.`),
       h('button', { class: 'btn', onclick: async () => {
         for (const s of sessions) if (s.away === true && !s.deleted && s.date >= today) await store.remove('sessions', s.id);
         close(); toast('Welcome back!');
@@ -397,7 +399,7 @@ function publicSwitch(book, initial) {
 
 function celebrate() {
   confetti();
-  toast('🏆 New trophy!');
+  toast('New trophy!');
 }
 
 // ---------- Add book ----------
@@ -416,14 +418,14 @@ function booksScreen() {
   ui.bookView = null;
   const seg = (id, label) => h('button', { class: `seg${ui.booksSection === id ? ' on' : ''}`, onclick: () => { ui.booksSection = id; render(); } }, label);
   return h('div', { class: 'stack' },
-    h('div', { class: 'segmented' }, seg('shelf', '📚 Shelf'), seg('road', '🏆 Trophy road')),
+    h('div', { class: 'segmented' }, seg('shelf', 'Shelf'), seg('road', 'Trophy road')),
     ui.booksSection === 'road' ? trophyScreen() : shelf());
 }
 
 function shelf() {
   if (!data.books.length) {
     return h('div', { class: 'card hero' }, h('h2', null, 'No books yet'), h('p', { class: 'muted' }, 'Find any book in Explore and add it here.'),
-      h('button', { class: 'btn primary', onclick: addBookSheet }, '🔍 Find a book'));
+      h('button', { class: 'btn primary', onclick: addBookSheet }, 'Find a book'));
   }
   const group = (status, title) => {
     const list = data.books.filter((b) => b.status === status).sort(byNewest);
@@ -445,7 +447,7 @@ function bookDiary(book) {
   const section = (id, label) => h('button', { class: `seg${ui.section === id ? ' on' : ''}`, onclick: async () => { await flushNotebook(); ui.section = id; render(); } }, label);
   const statusBtn = book.status === 'want'
     ? h('button', { class: 'btn small primary', onclick: () => startReading(book) }, 'Start reading')
-    : book.status === 'reading' ? h('button', { class: 'btn small', onclick: () => finishSheet(book) }, 'Finished 🏆') : null;
+    : book.status === 'reading' ? h('button', { class: 'btn small', onclick: () => finishSheet(book) }, 'Finished') : null;
   return h('div', { class: 'stack' },
     h('button', { class: 'link-btn back-link', onclick: async () => { await flushNotebook(); ui.bookView = null; render(); } }, '← My Books'),
     h('div', { class: 'journal-head' }, cover(book, 'cover-sm'),
@@ -453,8 +455,8 @@ function bookDiary(book) {
         h('div', { class: 'actions tight' }, statusBtn,
           bookKeyOf(book) && h('button', { class: 'btn small', onclick: () => openBookPageFor(book) }, 'Book page'),
           book.status === 'finished' && h('button', { class: 'btn small', onclick: () => trophySheet(book) }, 'My review'),
-          h('button', { class: 'icon-btn', 'aria-label': `Remove ${book.title}`, onclick: () => removeWholeBook(book) }, '🗑')))),
-    h('div', { class: 'segmented' }, section('notebook', '📓 Notebook'), section('comments', '💬 Comments')),
+          h('button', { class: 'icon-btn', 'aria-label': `Remove ${book.title}`, onclick: () => removeWholeBook(book) }, icon('trash'))))),
+    h('div', { class: 'segmented' }, section('notebook', 'Notebook'), section('comments', 'Comments')),
     ui.section === 'comments'
       ? commentsView({ book, blocks: data.blocks })
       : notebookView({
@@ -516,7 +518,7 @@ function trophySheet(book) {
     starBox,
     h('label', null, 'Review', comment),
     share.el,
-    lessons.length > 0 && h('div', null, h('div', { class: 'eyebrow' }, '💡 Lessons'), lessons.map((l) => h('p', { class: 'lesson-text small' }, l.text))),
+    lessons.length > 0 && h('div', null, h('div', { class: 'eyebrow' }, 'Lessons'), lessons.map((l) => h('p', { class: 'lesson-text small' }, l.text))),
     h('div', { class: 'actions' },
       h('button', { class: 'btn primary', onclick: async () => {
         await store.save('books', { id: book.id, rating, comment: comment.value.trim(), publicReview: share.value() });
@@ -565,6 +567,15 @@ function settingsScreen() {
         { uid: await store.getMeta('ownerUid', ''), email: await store.getMeta('ownerEmail', '') }),
       fbConfigured() && ds.admin && adminPanel(),
       fbConfigured() && friendsCard({ cover, rerender: render }),
+      h('div', { class: 'card' },
+        h('h2', null, 'Backup file'),
+        h('p', { class: 'muted small' }, 'A single file with everything, drawings included. Save it to Drive or send it to yourself.'),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn', onclick: downloadBackup }, 'Download backup'),
+          h('button', { class: 'btn', onclick: () => fileIn.click() }, 'Restore from file'), fileIn),
+        h('p', { class: 'muted small' }, 'Restoring only adds what is missing - it never changes or deletes anything you already have.')),
+      remindersCard(),
+      h('details', { class: 'help' }, h('summary', null, 'Help and troubleshooting'), h('div', { class: 'stack' },
       st.cloud ? h('div', { class: 'card' },
         h('h2', null, 'Where your diary is saved'),
         h('p', { class: 'small' }, st.pending ? `${st.pending} change${st.pending === 1 ? '' : 's'} waiting to save to your account.` : `Saved to your reader account · ${ago(st.lastSyncOk)}. Nothing to do: it saves by itself.`),
@@ -585,14 +596,6 @@ function settingsScreen() {
                 ? h('button', { class: 'btn primary', onclick: () => syncer.confirmAccount().then(render) }, `Yes, use ${ds.email}`)
                 : h('button', { class: 'btn primary', onclick: () => syncer.syncNow({ interactive: true }).then(render) }, ds.drive === 'connected' ? 'Sync now' : 'Connect Google Drive')))),
       h('div', { class: 'card' },
-        h('h2', null, 'Backup file'),
-        h('p', { class: 'muted small' }, 'A single file with everything, drawings included. Save it to Drive or send it to yourself.'),
-        h('div', { class: 'actions' },
-          h('button', { class: 'btn', onclick: downloadBackup }, 'Download backup'),
-          h('button', { class: 'btn', onclick: () => fileIn.click() }, 'Restore from file'), fileIn),
-        h('p', { class: 'muted small' }, 'Restoring only adds what is missing - it never changes or deletes anything you already have.')),
-      remindersCard(),
-      h('div', { class: 'card' },
         h('h2', null, 'Get book ideas'),
         h('p', { class: 'muted small' }, 'Copies your ratings, comments and lessons as text. Paste it to Claude and ask what to read next.'),
         h('button', { class: 'btn', onclick: exportForClaude }, 'Export for Claude')),
@@ -601,7 +604,7 @@ function settingsScreen() {
         h('p', { class: 'small' }, persisted ? 'Chrome agreed to keep this app\'s data (best effort).' : 'Chrome has not promised to keep this app\'s data. The Drive backup is what really protects it.'),
         h('details', null, h('summary', null, 'Sync log'),
           logEntries.length ? h('ul', { class: 'log' }, logEntries.map((e) => h('li', null, `${new Date(e.time).toLocaleString()} · ${e.op} · ${e.ok ? 'ok' : 'failed'}${e.code ? ` · ${e.code}` : ''}`))) : h('p', { class: 'muted small' }, 'Nothing yet.'),
-          h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(JSON.stringify(logEntries, null, 1)).then(() => toast('Copied')) }, 'Copy log'))),
+          h('button', { class: 'btn small', onclick: () => navigator.clipboard?.writeText(JSON.stringify(logEntries, null, 1)).then(() => toast('Copied')) }, 'Copy log'))))),
       h('p', { class: 'center' }, h('button', { class: 'link-btn muted small', onclick: farFromHomeSheet }, 'Far from home?')),
       h('p', { class: 'muted small center' }, `Reading Diary ${VERSION}`)].filter(Boolean));
   })();
@@ -752,6 +755,7 @@ async function renderPill() {
     else { cls = 'green'; text = st.lastSyncOk ? `Saved · ${ago(st.lastSyncOk)}` : 'Saved'; }
     pill.className = `pill ${cls}`;
     pill.textContent = text;
+    pill.hidden = cls === 'green'; // all saved: nothing to say
     pill.dataset.action = drawings && !hasDriveToken() ? 'drawings' : '';
     return;
   }
@@ -771,11 +775,12 @@ async function renderPill() {
   }
   pill.className = `pill ${cls}`;
   pill.textContent = text;
+  pill.hidden = false;
 }
 
 function setupShell() {
   const nav = document.querySelector('.tabbar');
-  nav.replaceChildren(...TABS.map((t) => h('button', { 'data-tab': t.id, onclick: () => go(t.id) }, h('span', { class: 'tab-icon', 'aria-hidden': 'true' }, t.icon), h('span', null, t.label))));
+  nav.replaceChildren(...TABS.map((t) => h('button', { 'data-tab': t.id, onclick: () => go(t.id) }, h('span', { class: 'tab-icon' }, icon(t.icon)), h('span', null, t.label))));
   document.getElementById('pill').addEventListener('click', async (e) => {
     const d = syncer.state.drive;
     if (e.currentTarget.dataset.action === 'drawings') { await syncer.syncNow({ interactive: true }); renderPill(); return; }
@@ -845,10 +850,10 @@ function remindersCard() {
     fill(box,
       h('h2', null, 'Reading reminders'),
       h('label', { class: 'switch-row' }, sw, h('span', null, h('strong', null, 'Remind me to read'), h('span', { class: 'muted small block' }, state))),
-      h('p', { class: 'muted small' }, 'Chrome decides the exact time (roughly daily, more reliable the more you use the app). Never at night, at most once a day, and only on days you haven\'t read. Opening the app asks "Did you read today?" too.'),
+      h('p', { class: 'muted small' }, 'Chrome decides the exact time (roughly daily, more reliable the more you use the app). Never at night, at most once a day, and only on days you haven\'t read. Opening the app asks too.'),
       st.notif === 'granted' && h('button', { class: 'btn small', onclick: async () => {
         const reg = await navigator.serviceWorker.ready;
-        await reg.showNotification('📖 Test reminder', { body: 'This is what a reading reminder looks like.', tag: 'read-reminder-test', icon: 'icons/icon-192.png' });
+        await reg.showNotification('Test reminder', { body: 'This is what a reading reminder looks like.', tag: 'read-reminder-test', icon: 'icons/icon-192.png' });
       } }, 'Send a test reminder'));
   });
   return box;

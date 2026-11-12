@@ -7,12 +7,15 @@
   <title>Reading Diary privacy</title>
   <link rel="icon" href="icons/icon-192.png">
   <style>
-    :root { --bg: #f6f1e7; --ink: #1d1b16; --muted: #6f675a; --card: #fffdf8; --line: #e5dccb; --accent: #c2410c; }
-    @media (prefers-color-scheme: dark) { :root { --bg: #17150f; --ink: #f1ebdf; --muted: #a99f8d; --card: #221f18; --line: #3a3427; --accent: #f97316; } }
+    :root { --bg: #fcfdff; --ink: #16223f; --muted: #5b6785; --line: #c7d6ec; --accent: #1e4fd6; --hi: #ffe55c; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #141c33; --ink: #e9edf8; --muted: #9aa6c4; --line: #2a3860; --accent: #8fb0ff; --hi: rgb(255 229 92 / 0.28); } }
+    @font-face { font-family: 'Caveat'; src: url('fonts/caveat-500-latin.woff2') format('woff2'); font-weight: 500; font-display: swap; }
     body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    main { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
-    h1 { font-size: 1.7rem; margin: 0 0 4px; } h2 { font-size: 1.15rem; margin: 28px 0 8px; color: var(--accent); }
-    .muted { color: var(--muted); } section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px 16px 12px; margin-top: 14px; }
+    main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1, h2 { font-family: 'Caveat', cursive; font-weight: 500; line-height: 1.15; }
+    h1 { font-size: 2.4rem; margin: 0 0 4px; }
+    h2 { font-size: 1.75rem; margin: 20px 0 6px; display: table; padding: 0 6px 0 2px; background: linear-gradient(transparent 55%, var(--hi) 55% 90%, transparent 90%); }
+    .muted { color: var(--muted); } section { border-bottom: 1.5px solid var(--line); padding-bottom: 8px; }
     a { color: var(--accent); } ul { padding-left: 20px; } li { margin: 4px 0; }
   </style>
 </head>

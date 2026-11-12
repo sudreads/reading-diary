@@ -106,7 +106,7 @@ export function readingSession(book, { cover, complete, addMinutes, openNotebook
     time.textContent = st ? `🔥 ${st}` : '✓';
     note.textContent = extraNote || (st ? `${st} day${st === 1 ? '' : 's'} in a row! Today counts.` : 'Today is already counted.');
     stopBtn.replaceWith(h('div', { class: 'stack wide' },
-      h('button', { class: 'btn primary wide big-btn', onclick: () => { close(); openNotebook(); } }, '📓 Open notebook'),
+      h('button', { class: 'btn primary wide big-btn', onclick: () => { close(); openNotebook(); } }, 'Open notebook'),
       h('button', { class: 'btn wide big-btn', onclick: keepGoing }, 'Keep going')));
     confetti();
   }
@@ -126,7 +126,7 @@ export function readingSession(book, { cover, complete, addMinutes, openNotebook
     const minutes = Math.min(1440, Math.floor(timer.elapsed() / 60000));
     close();
     if (savedId && minutes > durationMs / 60000) {
-      try { await addMinutes(savedId, minutes); toast(`${minutes} minutes today 📚`); } catch { /* the day already counts */ }
+      try { await addMinutes(savedId, minutes); toast(`${minutes} minutes today`); } catch { /* the day already counts */ }
     }
   }
 

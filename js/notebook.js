@@ -4,7 +4,7 @@
 
 import * as store from './store.js';
 import * as syncer from './syncer.js';
-import { h, toast } from './dom.js';
+import { h, toast, icon } from './dom.js';
 import { rankBetween, compareRanked } from './rank.js';
 import { MAX_DRAWING_BYTES } from './validate.js';
 
@@ -169,7 +169,7 @@ export function notebookView({ book, pages, pageIndex, setPage, quiet, isBusy })
   function renderTools() {
     if (!drawing) {
       tools.replaceChildren(
-        h('button', { class: 'btn', onclick: async () => { await saveText(); startDrawing(); renderTools(); } }, '🖍 Draw on this page'));
+        h('button', { class: 'btn', onclick: async () => { await saveText(); startDrawing(); renderTools(); } }, 'Draw on this page'));
       return;
     }
     tools.replaceChildren(
@@ -213,7 +213,7 @@ export function notebookView({ book, pages, pageIndex, setPage, quiet, isBusy })
       drawing = null;
       await store.remove('blocks', page.id);
       setPage(Math.max(0, index - 1));
-    } }, '🗑'));
+    } }, icon('trash')));
 
   return h('div', { class: 'notebook' }, nav, paper, tools);
 }
@@ -228,7 +228,7 @@ export function commentsView({ book, blocks }) {
     lesson = !lesson;
     lessonBtn.classList.toggle('on', lesson);
     lessonBtn.setAttribute('aria-pressed', String(lesson));
-  } }, '💡 It\'s a lesson');
+  } }, 'It\'s a lesson');
 
   return h('div', { class: 'stack' },
     h('div', { class: 'card composer' }, input,
@@ -243,8 +243,8 @@ export function commentsView({ book, blocks }) {
       return h('article', { class: `comment${isLesson ? ' lesson' : ''}` },
         h('div', { class: 'comment-head' },
           h('span', { class: 'muted small' }, c.createdAt ? new Date(c.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : ''),
-          isLesson && h('span', { class: 'badge' }, '💡 Lesson'),
-          h('button', { class: 'icon-btn', 'aria-label': 'Delete comment', onclick: async () => { if (confirm('Delete this comment?')) await store.remove('blocks', c.id); } }, '🗑')),
+          isLesson && h('span', { class: 'badge' }, 'Lesson'),
+          h('button', { class: 'icon-btn', 'aria-label': 'Delete comment', onclick: async () => { if (confirm('Delete this comment?')) await store.remove('blocks', c.id); } }, icon('trash'))),
         h('p', { class: `comment-text${c.type === 'quote' ? ' quote' : ''}` }, c.text || ''));
     }) : h('p', { class: 'muted center' }, 'No comments yet. What do you think of the book so far?'));
 }

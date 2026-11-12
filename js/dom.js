@@ -34,6 +34,19 @@ function append(el, kids) {
   }
 }
 
+// Line icons, drawn in the current text colour. One style for the whole app.
+const ICONS = {
+  home: ['M3 11l9-8 9 8', 'M5 10v10h14V10', 'M10 20v-6h4v6'],
+  search: ['M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14', 'M21 21l-4.3-4.3'],
+  books: ['M3 4h4v16H3z', 'M9 4h4v16H9z', 'M15.2 6.2l3.9-1 3.4 13.6-3.9 1z'],
+  person: ['M12 4a4 4 0 1 0 0 8a4 4 0 1 0 0-8', 'M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7'],
+  trash: ['M4 7h16', 'M9 7V4h6v3', 'M6 7l1 13h10l1-13', 'M10 11v6', 'M14 11v6'],
+};
+export function icon(name) {
+  return s('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' },
+    ICONS[name].map((d) => s('path', { d })));
+}
+
 export function clear(el) { while (el.firstChild) el.firstChild.remove(); return el; }
 // replaceChildren() that skips false/null like h() does (native would print the word "false").
 export function fill(el, ...kids) { clear(el); append(el, kids); return el; }

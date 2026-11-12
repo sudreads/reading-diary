@@ -124,9 +124,9 @@ export function chooseStatusSheet(b, ctx) {
   const pick = async (status) => { close(); await ctx.addToMyBooks(b, status); };
   const close = sheet(`Add "${b.title}"`, h('div', { class: 'form' },
     reading ? h('p', { class: 'note' }, `You're reading ${reading.title}. Finish it first to start another.`)
-      : h('button', { class: 'btn primary big-btn', onclick: () => pick('reading') }, '📖 Start reading now'),
-    h('button', { class: 'btn big-btn', onclick: () => pick('want') }, '🔖 Want to read'),
-    h('button', { class: 'btn big-btn', onclick: () => pick('finished') }, '🏆 I already finished it')));
+      : h('button', { class: 'btn primary big-btn', onclick: () => pick('reading') }, 'Start reading now'),
+    h('button', { class: 'btn big-btn', onclick: () => pick('want') }, 'Want to read'),
+    h('button', { class: 'btn big-btn', onclick: () => pick('finished') }, 'I already finished it')));
 }
 
 // ---------- Book page ----------
