@@ -1,9 +1,10 @@
 // Backup files are untrusted input. Everything is checked before anything touches IndexedDB.
 
+import { safeCover, isBookKey } from './catalog.js';
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const RANK = /^[0-9a-z]{0,199}[1-9a-z]$/; // rank.js alphabet; keys never end in '0'
-const COVER_HOSTS = ['covers.openlibrary.org', 'openlibrary.org'];
 export const MAX_DRAWING_BYTES = 1.5 * 1024 * 1024;
 const MAX_TEXT = 20000;
 
@@ -14,18 +15,11 @@ function isRev(r) {
 function str(v, max = MAX_TEXT) { return v === undefined || v === null || (typeof v === 'string' && v.length <= max); }
 function num(v, lo, hi) { return v === undefined || v === null || (Number.isFinite(v) && v >= lo && v <= hi); }
 
-export function safeCoverUrl(u) {
-  if (!u) return true;
-  try {
-    const url = new URL(u);
-    return url.protocol === 'https:' && COVER_HOSTS.includes(url.hostname);
-  } catch { return false; }
-}
-
 const checks = {
   books: (r) => str(r.title, 500) && (r.title || '').length > 0 && str(r.author, 500) && str(r.comment) &&
-    str(r.olKey, 100) && safeCoverUrl(r.coverUrl) && ['reading', 'finished', 'want'].includes(r.status) &&
-    num(r.rating, 0, 5) && num(r.totalPages, 0, 100000),
+    str(r.olKey, 100) && str(r.coverUrl, 500) && str(r.bookKey, 100) && str(r.isbn13, 13) &&
+    (r.publicReview === undefined || typeof r.publicReview === 'boolean') &&
+    ['reading', 'finished', 'want'].includes(r.status) && num(r.rating, 0, 5) && num(r.totalPages, 0, 100000),
   blocks: (r) => typeof r.bookId === 'string' && UUID.test(r.bookId) &&
     ['page', 'comment', 'text', 'quote', 'lesson', 'drawing'].includes(r.type) && str(r.text) &&
     (r.lesson === undefined || typeof r.lesson === 'boolean') && num(r.createdAt, 0, 1e14) &&
@@ -52,7 +46,13 @@ export function validateBackup(data, { maxT }) {
         isRev(r.rev) && typeof (r.deleted ?? false) === 'boolean';
       if (!base || !checks[kind](r)) { errors.push(`Bad ${kind} record`); continue; }
       if (r.rev.t > maxT || (r.rankRev && r.rankRev.t > maxT)) { errors.push(`${kind} record dated in the future`); continue; }
-      out[kind].push(JSON.parse(JSON.stringify(r)));
+      const rec = JSON.parse(JSON.stringify(r));
+      // A cover or book key we don't recognise is blanked, never a reason to lose the book.
+      if (kind === 'books') {
+        if (rec.coverUrl && !safeCover(rec.coverUrl)) rec.coverUrl = '';
+        if (rec.bookKey && !isBookKey(rec.bookKey)) rec.bookKey = '';
+      }
+      out[kind].push(rec);
     }
   }
   for (const d of Array.isArray(data.drawings) ? data.drawings : []) {
