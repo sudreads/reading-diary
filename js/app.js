@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import * as syncer from './syncer.js';
-import { h, s, clear, fill, toast, sheet, ago, confetti, icon } from './dom.js';
+import { h, s, clear, fill, toast, sheet, ago, confetti, icon, hueOf, buzz } from './dom.js';
 import { streak, bestStreak, streakNudge, MILESTONES, readingDates, awayDates, farFromHome, awayRecord, AWAY_MAX_DAYS, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
@@ -10,11 +10,12 @@ import { bookKeyOf } from './catalog.js';
 import { exploreScreen, bookPage, chooseStatusSheet } from './explore.js';
 import { dedupePlan } from './dedupe.js';
 import { handleSheet, adminPanel } from './reviews.js';
-import { friendsCard, schedulePublish } from './friends.js';
+import { friendsCard, homeFriends, schedulePublish } from './friends.js';
+import { shareStreak } from './share.js';
 import { readingSession, sessionOpen } from './session.js';
 import { eraseMessage } from './erase.js';
 
-const VERSION = '2.7.0';
+const VERSION = '3.0.0';
 const TABS = [
   { id: 'home', label: 'Home', icon: 'home' },
   { id: 'explore', label: 'Explore', icon: 'search' },
@@ -113,7 +114,6 @@ function maybeCheckin() {
   const st = streak(data.sessions, today);
   const wrap = h('div', { class: 'checkin-screen', role: 'dialog', 'aria-label': 'Ready to read?' },
     h('div', { class: 'checkin-card' },
-      h('div', { class: 'flame-big', 'aria-hidden': 'true' }, st ? '🔥' : '🌱'),
       h('div', { class: 'muted' }, st ? `${st} day streak` : 'Start a streak today'),
       cover(book),
       h('h1', null, 'Ready to read?'),
@@ -182,7 +182,12 @@ function openBookPageFor(book) {
 }
 
 function cover(book, cls = 'cover') {
-  const fallback = () => h('div', { class: `${cls} cover-blank` }, (book.title || '?').slice(0, 1).toUpperCase());
+  // No picture: a cover in the book's own colour, with its title on it.
+  const fallback = () => {
+    const el = h('div', { class: `${cls} cover-blank`, 'aria-hidden': 'true' }, (book.title || '').slice(0, 48));
+    el.style.setProperty('--ch', hueOf(book.title || ''));
+    return el;
+  };
   if (!book.coverUrl) return fallback();
   const img = h('img', { class: cls, src: book.coverUrl, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' });
   img.addEventListener('error', () => img.replaceWith(fallback()), { once: true });
@@ -211,6 +216,8 @@ function nowScreen() {
   const trip = farFromHome(data.sessions, today);
   const book = currentBook();
   const lesson = lessonOfDay(data.blocks, today);
+  // The whole app takes its colour from the book being read.
+  document.documentElement.style.setProperty('--h', hueOf(book?.title || 'Reading Diary'));
 
   if (!data.books.length) {
     return h('div', { class: 'stack' },
@@ -225,7 +232,10 @@ function nowScreen() {
     h('div', { class: 'streak-line' },
       h('span', { class: 'streak-num' }, String(st)),
       h('span', { class: 'streak-label' }, 'day streak'),
-      h('span', { class: 'streak-flame', 'aria-hidden': 'true' }, st ? '🔥' : '🌱')),
+      h('button', { class: 'share-btn', onclick: async () => {
+        const how = await shareStreak({ streak: st, title: book?.title || '', handle: syncer.state.handle });
+        if (how === 'saved') toast('Saved to your downloads');
+      } }, icon('share'), 'Share')),
     h('p', { class: 'streak-nudge' }, streakNudge({ streak: st, readToday, awayToday: away.has(today), hour: new Date().getHours() })),
     h('div', { class: 'week', 'aria-label': 'Last 7 days' }, week.map((d) => h('div', { class: `day${dates.has(d) ? ' on' : away.has(d) ? ' away' : ''}${d === today ? ' today' : ''}` },
       h('span', { class: 'dot' }), h('span', { class: 'muted tiny' }, new Date(`${d}T12:00`).toLocaleDateString(undefined, { weekday: 'narrow' }))))),
@@ -244,6 +254,7 @@ function nowScreen() {
   return h('div', { class: 'stack' },
     streakCard,
     book ? currentBookCard(book, readToday) : nextBookCard(),
+    fbConfigured() && homeFriends({ myStreak: st, openMe: () => go('me') }),
     goals,
     book && h('button', { class: 'btn ghost wide', onclick: addBookSheet }, '+ Save a book for later'),
     lesson && h('div', { class: 'card lesson-day' },
@@ -1048,6 +1059,7 @@ async function boot() {
   });
   // Something he writes or draws is finished once focus leaves it or "Done" is tapped.
   document.addEventListener('focusout', () => setTimeout(maybeRender, 0));
+  document.addEventListener('click', (e) => { if (e.target.closest?.('.btn.primary, .tabbar button, .seg')) buzz(); }, true);
   document.addEventListener('click', () => setTimeout(() => { maybeRender(); maybeCheckin(); }, 0));
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'hidden') await flushNotebook(); // keep a half-finished drawing

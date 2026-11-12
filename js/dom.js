@@ -41,11 +41,22 @@ const ICONS = {
   books: ['M3 4h4v16H3z', 'M9 4h4v16H9z', 'M15.2 6.2l3.9-1 3.4 13.6-3.9 1z'],
   person: ['M12 4a4 4 0 1 0 0 8a4 4 0 1 0 0-8', 'M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7'],
   trash: ['M4 7h16', 'M9 7V4h6v3', 'M6 7l1 13h10l1-13', 'M10 11v6', 'M14 11v6'],
+  share: ['M12 15V4', 'M8 8l4-4 4 4', 'M5 13v6h14v-6'],
 };
 export function icon(name) {
   return s('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' },
     ICONS[name].map((d) => s('path', { d })));
 }
+
+// Every book gets its own colour from its title: always cool to pink, never orange or green.
+export function hueOf(text) {
+  let n = 7;
+  for (const ch of String(text)) n = (n * 31 + ch.codePointAt(0)) % 100003;
+  return 195 + (n % 160);
+}
+
+// A light tap you can feel, where the phone supports it.
+export const buzz = (ms = 10) => { try { navigator.vibrate?.(ms); } catch { /* not allowed here */ } };
 
 export function clear(el) { while (el.firstChild) el.firstChild.remove(); return el; }
 // replaceChildren() that skips false/null like h() does (native would print the word "false").
@@ -93,7 +104,7 @@ export function ago(ts) {
 
 export function confetti() {
   const c = h('div', { class: 'confetti', 'aria-hidden': 'true' },
-    Array.from({ length: 24 }, (_, i) => h('i', { style: `--x:${(i * 37) % 100}vw;--d:${(i % 6) * 0.08}s;--h:${(i * 47) % 360}` })));
+    Array.from({ length: 24 }, (_, i) => h('i', { style: `--x:${(i * 37) % 100}vw;--d:${(i % 6) * 0.08}s;--k:${i % 7}` })));
   document.body.append(c);
   setTimeout(() => c.remove(), 1800);
 }

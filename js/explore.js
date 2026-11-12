@@ -107,11 +107,11 @@ export function exploreScreen(ctx) {
     if (!cards.length) return;
     friendsBox.replaceChildren(h('section', null, h('h2', { class: 'section-title' }, 'Friends'),
       h('div', { class: 'stack' }, cards.map((a) => h('button', { class: 'feed-review', onclick: (e) => { const row = e.currentTarget; friendSheet(a, { cover: ctx.cover, onChange: () => { const rest = row.parentElement; row.remove(); if (!rest.children.length) friendsBox.replaceChildren(); } }); } },
-        a.currentBook ? ctx.cover(a.currentBook, 'cover-sm') : h('span', { class: 'cover-sm friend-dot' }, a.streak ? '🔥' : '🌱'),
+        a.currentBook ? ctx.cover(a.currentBook, 'cover-sm') : h('span', { class: 'cover-sm friend-dot' }, String(a.streak)),
         h('span', { class: 'feed-text' },
           h('strong', null, `@${a.handle}`),
           h('span', { class: 'small' }, a.currentBook ? `Reading ${a.currentBook.title}` : a.lastFinished ? `Finished ${a.lastFinished.title}` : 'Not reading anything yet'),
-          h('span', { class: 'muted small' }, `${a.streak ? '🔥' : '🌱'} ${a.streak} day streak · ${a.finishedCount} finished`)))))));
+          h('span', { class: 'muted small' }, `${a.streak} day streak · ${a.finishedCount} finished`)))))));
   }).catch(() => { /* friends are a bonus here; the Me tab shows any error */ });
   if (lastQuery.trim().length >= 2) run(lastQuery);
   return h('div', { class: 'stack' }, input, results, friendsBox, home);

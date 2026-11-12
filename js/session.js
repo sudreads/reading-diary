@@ -103,7 +103,7 @@ export function readingSession(book, { cover, complete, addMinutes, openNotebook
     try { const r = await complete(); savedId = r?.id || null; st = r?.streak ?? null; extraNote = r?.note || ''; }
     catch (e) { close(); toast(`Couldn't save (${e.message})`); return; }
     if (phase === 'closed') return;
-    time.textContent = st ? `🔥 ${st}` : '✓';
+    time.textContent = st ? String(st) : '✓';
     note.textContent = extraNote || (st ? `${st} day${st === 1 ? '' : 's'} in a row! Today counts.` : 'Today is already counted.');
     stopBtn.replaceWith(h('div', { class: 'stack wide' },
       h('button', { class: 'btn primary wide big-btn', onclick: () => { close(); openNotebook(); } }, 'Open notebook'),

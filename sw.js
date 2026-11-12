@@ -39,17 +39,17 @@ function decideReminder({ sessions, remindersOn, lastReminder, now = new Date() 
 }
 function reminderText(streakDays) {
   return streakDays
-    ? { title: `🔥 Keep your ${streakDays}-day streak going`, body: "You haven't read today yet - a 5-minute reading session is enough." }
-    : { title: '📖 Time to read', body: 'A 5-minute reading session today starts a streak.' };
+    ? { title: `Keep your ${streakDays}-day streak going`, body: "You haven't read today yet - a 5-minute reading session is enough." }
+    : { title: 'Time to read', body: 'A 5-minute reading session today starts a streak.' };
 }
 // ---- END copy ----
 
-const CACHE = 'rd-v25';
+const CACHE = 'rd-v26';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/caveat-500-latin.woff2',
   'js/app.js', 'js/config.js', 'js/derive.js', 'js/dom.js', 'js/drive.js', 'js/merge.js', 'js/notebook.js',
-  'js/firebase.js', 'js/reviews.js', 'js/social.js', 'js/signout.js', 'js/dedupe.js', 'js/cloud.js', 'js/catalog.js', 'js/explore.js', 'js/friends.js', 'js/activity.js', 'js/session.js', 'js/erase.js',
+  'js/firebase.js', 'js/reviews.js', 'js/social.js', 'js/signout.js', 'js/dedupe.js', 'js/cloud.js', 'js/catalog.js', 'js/explore.js', 'js/friends.js', 'js/activity.js', 'js/session.js', 'js/erase.js', 'js/share.js',
   'js/reminder.js', 'js/rank.js', 'js/rev.js', 'js/store.js', 'js/sync.js', 'js/syncer.js', 'js/validate.js',
 ];
 

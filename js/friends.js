@@ -55,7 +55,7 @@ export async function friendSheet(friend, { cover, onChange } = {}) {
     h('div', null, h('div', { class: 'eyebrow' }, label), h('strong', null, b.title), b.rating ? h('div', { class: 'stars-inline' }, '★'.repeat(b.rating)) : null));
   fill(body,
     a ? h('div', { class: 'friend-stats' },
-      h('div', null, h('div', { class: 'big' }, `${a.streak ? '🔥' : '🌱'} ${a.streak}`), h('div', { class: 'muted small' }, 'day streak')),
+      h('div', null, h('div', { class: 'big' }, String(a.streak)), h('div', { class: 'muted small' }, 'day streak')),
       h('div', null, h('div', { class: 'big' }, String(a.finishedCount)), h('div', { class: 'muted small' }, 'books finished')))
       : h('p', { class: 'muted' }, `@${friend.handle} hasn't shared any reading yet.`),
     a && bookLine('Reading now', a.currentBook),
@@ -138,4 +138,27 @@ export async function friendsActivity() {
     .sort((a, b) => b.updatedAt - a.updatedAt);
   Object.assign(activityCache, { uid, at: Date.now(), cards });
   return cards;
+}
+
+// ---------- Home -> you and your friends, by streak ----------
+
+export function homeFriends({ myStreak, openMe }) {
+  const box = h('div', { class: 'card' }, h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Friends'),
+    h('button', { class: 'link-btn', onclick: openMe }, 'Add')));
+  const strip = h('div', { class: 'friends-strip' });
+  const chip = (name, streak, me) => h('div', { class: `friend-chip${me ? ' me' : ''}` },
+    h('strong', null, String(streak)), h('span', { class: 'tiny' }, me ? 'You' : `@${name}`));
+  if (!ready()) {
+    box.append(h('p', { class: 'muted small' }, 'Add friends by their reader name and compare streaks.'));
+    return box;
+  }
+  box.append(strip);
+  strip.append(chip('', myStreak, true));
+  friendsActivity().then((cards) => {
+    const rows = [{ me: true, streak: myStreak }, ...cards.map((c) => ({ name: c.handle, streak: c.streak }))]
+      .sort((a, b) => b.streak - a.streak || (a.me ? -1 : 1));
+    fill(strip, rows.map((r) => chip(r.name, r.streak, r.me)));
+    if (!cards.length) box.append(h('p', { class: 'muted small' }, 'Add friends by their reader name and compare streaks.'));
+  }).catch(() => { /* offline: your own streak is still shown */ });
+  return box;
 }
