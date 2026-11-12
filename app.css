@@ -64,6 +64,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 
 main { max-width: 560px; margin: 0 auto; padding: 8px 16px 24px; }
 .stack { display: grid; gap: 14px; }
+/* Screens settle in with a small move. Movement only, never opacity: an animation paused while the
+   app is in the background must not leave the screen invisible. */
+main > * { animation: settle 0.28s cubic-bezier(0.2, 0.9, 0.2, 1); }
+.hello { font-size: 2rem; margin: 6px 2px 2px; }
 .stack.tight { gap: 8px; }
 .muted { color: var(--muted); }
 .small { font-size: 0.86rem; }
@@ -370,6 +374,10 @@ details summary { cursor: pointer; font-weight: 700; padding: 6px 0; }
 .form { display: grid; gap: 14px; }
 .form label { display: grid; gap: 6px; font-weight: 650; font-size: 0.9rem; }
 .form label.switch-row { display: flex; }
+.ask-wrap { position: fixed; inset: 0; z-index: 60; background: rgb(0 0 0 / 0.62); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); display: grid; place-items: center; padding: 24px; }
+.ask { width: 100%; max-width: 360px; background: var(--raised); border: 1px solid var(--line); border-radius: 28px; padding: 22px 20px 18px; box-shadow: 0 30px 80px rgb(0 0 0 / 0.6); }
+.ask p { margin: 0; font-size: 1.08rem; font-weight: 650; line-height: 1.4; letter-spacing: -0.01em; }
+.ask .actions .btn { flex: 1; }
 .toast {
   position: fixed; left: 50%; bottom: calc(104px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
   background: var(--ink); color: #0a0a0d; padding: 12px 20px; border-radius: 999px; font-weight: 700;
@@ -382,4 +390,5 @@ details summary { cursor: pointer; font-weight: 700; padding: 6px 0; }
 @keyframes drop { to { transform: translateY(110vh) rotate(540deg); } }
 @keyframes rise { from { transform: translateY(60px); opacity: 0; } }
 @keyframes fade { from { opacity: 0; } }
+@keyframes settle { from { transform: translateY(10px); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

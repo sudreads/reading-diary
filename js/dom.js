@@ -48,11 +48,12 @@ export function icon(name) {
     ICONS[name].map((d) => s('path', { d })));
 }
 
-// Every book gets its own colour from its title: always cool to pink, never orange or green.
+// Every book gets its own colour from its title: blue through violet to pink. The glow and the
+// covers also use this hue + 55, so it stops at 290: nothing ever lands on red, orange or green.
 export function hueOf(text) {
   let n = 7;
   for (const ch of String(text)) n = (n * 31 + ch.codePointAt(0)) % 100003;
-  return 195 + (n % 160);
+  return 195 + (n % 96);
 }
 
 // A light tap you can feel, where the phone supports it.
@@ -91,6 +92,23 @@ export function sheet(title, body, { onClose } = {}) {
   const first = wrap.querySelector('input, textarea');
   if (first) setTimeout(() => first.focus(), 50);
   return close;
+}
+
+// Asks a yes/no question in the app's own style. Resolves true only when the action is chosen;
+// tapping outside, Cancel or Escape all mean no. `yes` names the action ("Delete", "Stop").
+export function ask(message, { yes = 'Yes', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const done = (answer) => { document.removeEventListener('keydown', onKey); wrap.remove(); resolve(answer); };
+    const onKey = (e) => { if (e.key === 'Escape') done(false); };
+    const go = h('button', { class: `btn ${danger ? 'danger' : 'primary'}`, onclick: () => done(true) }, yes);
+    const wrap = h('div', { class: 'ask-wrap', onclick: (e) => { if (e.target === wrap) done(false); } },
+      h('div', { class: 'ask', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': message },
+        h('p', null, message),
+        h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => done(false) }, 'Cancel'), go)));
+    document.addEventListener('keydown', onKey);
+    document.body.append(wrap);
+    go.focus();
+  });
 }
 
 export function ago(ts) {

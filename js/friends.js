@@ -4,7 +4,7 @@
 import * as fb from './firebase.js';
 import * as syncer from './syncer.js';
 import * as store from './store.js';
-import { h, fill, sheet, toast } from './dom.js';
+import { h, fill, sheet, toast, ask } from './dom.js';
 import { localDate } from './derive.js';
 import { activityCard, liveStreak } from './activity.js';
 import { normaliseHandle, handleProblem } from './social.js';
@@ -61,7 +61,7 @@ export async function friendSheet(friend, { cover, onChange } = {}) {
     a && bookLine('Reading now', a.currentBook),
     a && bookLine('Last finished', a.lastFinished),
     h('button', { class: 'btn ghost', onclick: async () => {
-      if (!confirm(`Remove @${friend.handle} from your friends?`)) return;
+      if (!(await ask(`Remove @${friend.handle} from your friends?`, { yes: 'Remove', danger: true }))) return;
       try { await fb.unfriend(syncer.state.uid, friend.uid); forget(); toast(`Removed @${friend.handle}`); close(); onChange?.(); } catch (e) { toast(`Couldn't remove (${e.code || e.message})`); }
     } }, 'Unfriend'));
 }

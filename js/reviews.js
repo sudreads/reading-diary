@@ -2,7 +2,7 @@
 
 import * as fb from './firebase.js';
 import * as syncer from './syncer.js';
-import { h, sheet, toast } from './dom.js';
+import { h, sheet, toast, ask } from './dom.js';
 import { normaliseHandle, handleProblem, REPORT_REASONS } from './social.js';
 
 // First sign-in: pick the permanent @handle.
@@ -56,7 +56,7 @@ export function adminPanel() {
           h('div', null, h('strong', null, REPORT_REASONS[r.reason] || r.reason), h('div', { class: 'muted small' }, `Book ${r.workId} · reviewer ${r.reviewerUid.slice(0, 6)}…`)),
           h('div', { class: 'actions' },
             h('button', { class: 'btn small', onclick: async () => {
-              if (!confirm('Delete this review for everyone?')) return;
+              if (!(await ask('Delete this review for everyone?', { yes: 'Delete', danger: true }))) return;
               // reports carry a 2.0 book key, or a bare 1.x Open Library work id
               const key = /^OL\d+W$/.test(r.workId) ? `ol:${r.workId}` : r.workId;
               await fb.deleteReview2(key, r.reviewerUid).catch(() => {});

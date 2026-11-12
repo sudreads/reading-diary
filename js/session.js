@@ -2,7 +2,7 @@
 // With the screen kept awake (Wake Lock), leaving the app ends the session; on phones without
 // it the screen may sleep by itself, so leaving only pauses the timer.
 
-import { h, toast, confetti } from './dom.js';
+import { h, toast, confetti, ask } from './dom.js';
 
 export const SESSION_MS = 5 * 60 * 1000;
 const MAX_MS = 1440 * 60 * 1000; // the most minutes a session record may hold
@@ -87,9 +87,9 @@ export function readingSession(book, { cover, complete, addMinutes, openNotebook
     onClose?.(finished);
   }
 
-  function stop() {
+  async function stop() {
     if (phase !== 'counting') return;
-    if (!confirm(`Stop now? ${stopped}`)) return;
+    if (!(await ask(`Stop now? ${stopped}`, { yes: 'Stop', danger: true }))) return;
     if (phase !== 'counting') return; // the timer ran out while he was deciding
     close();
     toast(`Session stopped. ${stopped}`);

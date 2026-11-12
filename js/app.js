@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import * as syncer from './syncer.js';
-import { h, s, clear, fill, toast, sheet, ago, confetti, icon, hueOf, buzz } from './dom.js';
+import { h, s, clear, fill, toast, sheet, ago, confetti, icon, hueOf, buzz, ask } from './dom.js';
 import { streak, bestStreak, streakNudge, MILESTONES, readingDates, awayDates, farFromHome, awayRecord, AWAY_MAX_DAYS, lessonOfDay, localDate, addDays } from './derive.js';
 import { validateBackup } from './validate.js';
 import { notebookView, commentsView, pagesOf, flushNotebook, resetNotebook, isLessonBlock } from './notebook.js';
@@ -15,7 +15,7 @@ import { shareStreak } from './share.js';
 import { readingSession, sessionOpen } from './session.js';
 import { eraseMessage } from './erase.js';
 
-const VERSION = '3.0.0';
+const VERSION = '3.1.0';
 const TABS = [
   { id: 'home', label: 'Home', icon: 'home' },
   { id: 'explore', label: 'Explore', icon: 'search' },
@@ -203,6 +203,21 @@ function stars(n, onPick) {
 
 // ---------- Now ----------
 
+// The streak number counts up once, the first time Home is shown after opening the app.
+let countedUp = false;
+function countUp(el, to) {
+  if (countedUp || to < 2 || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  countedUp = true;
+  const t0 = performance.now();
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / 800);
+    el.textContent = String(Math.round(to * (1 - (1 - k) ** 3)));
+    if (k < 1) requestAnimationFrame(step);
+  };
+  el.textContent = '0';
+  requestAnimationFrame(step);
+}
+
 function notYetToday() {
   try { return localStorage.getItem('rd-notyet') === localDate(); } catch { return false; }
 }
@@ -251,7 +266,12 @@ function nowScreen() {
       h('span', null, String(m)), h('span', { class: 'tiny' }, best >= m ? 'done' : 'days')))));
 
   // The thing to do today comes straight after the streak; goals sit below it.
+  const hour = new Date().getHours();
+  const hello = h('h1', { class: 'hello' }, hour < 5 ? 'Still up?' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening');
+  countUp(streakCard.querySelector('.streak-num'), st);
+
   return h('div', { class: 'stack' },
+    hello,
     streakCard,
     book ? currentBookCard(book, readToday) : nextBookCard(),
     fbConfigured() && homeFriends({ myStreak: st, openMe: () => go('me') }),
@@ -559,7 +579,7 @@ function trophySheet(book) {
 async function removeWholeBook(book) {
   const mine = data.blocks.filter((x) => x.bookId === book.id);
   const written = mine.filter((x) => (x.text || '').trim() || x.drawingId).length;
-  if (!confirm(`Remove "${book.title}"?${written ? `\n\n${written} page${written === 1 ? '' : 's'}/comment${written === 1 ? '' : 's'} you wrote will be deleted too.` : ''}`)) return false;
+  if (!(await ask(`Remove "${book.title}"?${written ? ` The ${written} page${written === 1 ? '' : 's'} and comment${written === 1 ? '' : 's'} you wrote go with it.` : ''}`, { yes: 'Remove', danger: true }))) return false;
   for (const b of mine) await store.remove('blocks', b.id);
   await store.remove('books', book.id);
   await store.outboxBump(book.id); // the outbox sees the tombstone and deletes any public review

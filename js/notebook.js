@@ -4,7 +4,7 @@
 
 import * as store from './store.js';
 import * as syncer from './syncer.js';
-import { h, toast, icon } from './dom.js';
+import { h, toast, icon, ask } from './dom.js';
 import { rankBetween, compareRanked } from './rank.js';
 import { MAX_DRAWING_BYTES } from './validate.js';
 
@@ -206,7 +206,7 @@ export function notebookView({ book, pages, pageIndex, setPage, quiet, isBusy })
     h('button', { class: 'icon-btn', 'aria-label': 'Delete page', onclick: async () => {
       await saveText();
       if (!page) return toast('This page is already empty');
-      if (!confirm('Tear out this page? Its writing and drawing will be deleted.')) return;
+      if (!(await ask('Tear out this page? Its writing and drawing will be deleted.', { yes: 'Tear out', danger: true }))) return;
       clearTimeout(saveTimer);
       pendingText = null;
       flushers = [];
@@ -244,7 +244,7 @@ export function commentsView({ book, blocks }) {
         h('div', { class: 'comment-head' },
           h('span', { class: 'muted small' }, c.createdAt ? new Date(c.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : ''),
           isLesson && h('span', { class: 'badge' }, 'Lesson'),
-          h('button', { class: 'icon-btn', 'aria-label': 'Delete comment', onclick: async () => { if (confirm('Delete this comment?')) await store.remove('blocks', c.id); } }, icon('trash'))),
+          h('button', { class: 'icon-btn', 'aria-label': 'Delete comment', onclick: async () => { if (await ask('Delete this comment?', { yes: 'Delete', danger: true })) await store.remove('blocks', c.id); } }, icon('trash'))),
         h('p', { class: `comment-text${c.type === 'quote' ? ' quote' : ''}` }, c.text || ''));
     }) : h('p', { class: 'muted center' }, 'No comments yet. What do you think of the book so far?'));
 }

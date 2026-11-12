@@ -4,7 +4,7 @@
 
 import * as fb from './firebase.js';
 import * as syncer from './syncer.js';
-import { h, fill, sheet, toast } from './dom.js';
+import { h, fill, sheet, toast, ask } from './dom.js';
 import { searchBooks, bookDetails, plainText, bookKeyOf } from './catalog.js';
 import { averageOf, onePerReader, REPORT_REASONS } from './social.js';
 import { friendsActivity, friendSheet } from './friends.js';
@@ -210,7 +210,7 @@ export function bookPage(key, hint, ctx) {
       h('div', { class: 'review-tools' },
         !mine && h('button', { class: 'link-btn', onclick: () => reportSheet(r, key) }, 'Report'),
         (mine || me.admin) && h('button', { class: 'link-btn', onclick: async () => {
-          if (!confirm(mine ? 'Delete your public review? Your private rating stays in your diary.' : `Delete @${r.handle}'s review for everyone?`)) return;
+          if (!(await ask(mine ? 'Delete your public review? Your private rating stays in your diary.' : `Delete @${r.handle}'s review for everyone?`, { yes: 'Delete', danger: true }))) return;
           try {
             await fb.deleteReview2(key, r.uid);
             card.remove();
