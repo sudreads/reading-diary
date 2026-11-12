@@ -10,6 +10,7 @@ import { drainOutbox } from './social.js';
 import { signOutReady, backupCovers } from './signout.js';
 import { pushDirty, pullChanges, cloudCovers } from './cloud.js';
 import { EXPECTED_EMAIL } from './config.js';
+import { eraseIdentity, afterSignIn } from './erase.js';
 
 // account: 'off' (no Firebase), 'signed-out', 'needs-handle', 'ready', 'wrong-account'
 export const state = { drive: 'not-configured', email: '', syncing: false, failures: 0, error: '',
@@ -23,7 +24,7 @@ const lock = (name, fn, ifAvailable = false) => (navigator.locks
 
 export function onStatus(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 // After sign-out this tab's store is gone; late timers must not touch it (or the screen).
-const emit = () => { if (!stopped || state.signedOut) listeners.forEach((fn) => fn(state)); };
+const emit = () => { if (!stopped || state.signedOut || state.erasing) listeners.forEach((fn) => fn(state)); };
 
 // The diary on this device belongs to one account. Called with every Firebase user we see.
 async function bindAccount(user) {
@@ -42,6 +43,18 @@ async function bindAccount(user) {
   state.checked = true;
   if (state.handle) await store.setMeta('ownerHandle', state.handle);
   if (user.email) await store.setMeta('ownerEmail', user.email); // "signed in as", without Drive
+  await noteIfMarked(user.uid);
+  return true;
+}
+
+// A phone that finds its account is being deleted (the marker exists) remembers it, so the erase
+// screen shows from then on - offline too - and nothing more is written here.
+async function noteIfMarked(uid) {
+  let is = false;
+  try { is = await fb.isMarked(uid); } catch { return false; } // offline or signed out: can't tell
+  if (!is) return false;
+  if (!(await store.getMeta('eraseStage', ''))) await store.setMeta('eraseStage', 'started');
+  state.erasePending = true;
   return true;
 }
 
@@ -238,7 +251,10 @@ export async function cloudSync({ pull = true, wait = false } = {}) {
       const api = fb.recordsApi(state.uid);
       const pushed = await pushDirty({ store: local, api });
       state.stuck = pushed.skipped; // refused by the account: shown in the pill, kept on the phone
-      if (pushed.skipped) await store.log('account-sync', false, `${pushed.skipped} change(s) refused`);
+      if (pushed.skipped) {
+        await store.log('account-sync', false, `${pushed.skipped} change(s) refused`);
+        if (await noteIfMarked(state.uid)) return true; // refused because the account is being deleted
+      }
       if (pull) await pullChanges({ store: local, api });
       await store.setMeta('lastCloudOk', Date.now());
       return true;
@@ -301,26 +317,6 @@ export async function drainReviews() {
     await store.log('reviews', false, e.code || e.message);
     drainTimer = setTimeout(drainReviews, backoffMs(drainFailures));
   }
-  emit();
-}
-
-export async function deleteMyPublicData() {
-  const books = await store.all('books');
-  const { bookKeyOf } = await import('./catalog.js');
-  const workIds = [...new Set(books.map((b) => bookKeyOf(b)).filter(Boolean))];
-  await drive.connect({ interactive: true }); // fresh token for Firebase's re-authentication
-  // Marked first so an interrupted delete shows "finish deleting" instead of looking done.
-  await store.setMeta('deleteJob', true);
-  // Same lock as the outbox drain, waiting for it: no upsert can land after these deletes.
-  const run = () => fb.deleteMyPublicData(state.uid, workIds, drive.accessToken());
-  await (navigator.locks ? navigator.locks.request('rd-reviews', run) : run());
-  await store.setMeta('reviewOutbox', {});
-  await store.setMeta('deleteJob', false);
-  // Signing in again makes a brand-new Firebase account, so this diary must accept its new uid.
-  await store.setMeta('ownerUid', '');
-  state.account = 'signed-out';
-  state.uid = state.handle = '';
-  state.admin = false;
   emit();
 }
 
@@ -444,6 +440,97 @@ async function signOutCloud(say, fail) {
     err.reload = true;
     throw err;
   }
+}
+
+// ----- delete account (the decisions are in erase.js) -----
+
+const stop = (kind, cause) => Object.assign(new Error(cause?.message || kind), { kind, code: cause?.code });
+
+// Stops this tab's syncing for a deletion. Unlike stopAll() it keeps the Drive token (needed to
+// remove the drawings) and keeps progress flowing to the screen.
+function pauseForErase() {
+  stopped = true;
+  state.erasing = true;
+  clearTimeout(debounce); clearTimeout(retry); clearTimeout(drainTimer);
+  clearTimeout(cloudTimer); clearTimeout(cloudRetry); clearInterval(pullTimer);
+}
+
+// Waits for all three, so an upload already in flight finishes before anything is removed.
+const allLocks = (fn) => (navigator.locks
+  ? navigator.locks.request('rd-cloud', () => navigator.locks.request('rd-sync', () => navigator.locks.request('rd-reviews', fn)))
+  : fn());
+
+// Deletes the account and everything it holds, then clears this phone. Also what "Finish
+// deleting" runs: every step is safe to repeat. Throws an error with a `kind` (see erase.js);
+// if the 'eraseStage' meta is still empty when it throws, nothing was changed.
+export async function deleteAccount({ say = () => {}, skipDrive = false } = {}) {
+  if (!navigator.onLine) throw stop('offline');
+  const ownerUid = await store.getMeta('ownerUid', '');
+  const emu = fb.emulated(); // the emulator has no Google sign-in and no Drive
+  let token = null, googleSub = '';
+  if (!emu) {
+    drive.forget();
+    try {
+      await drive.connect({ interactive: true });
+      googleSub = (await drive.whoAmI()).sub;
+      token = drive.accessToken();
+    } catch (e) { throw stop('sign-in-failed', e); }
+  }
+  let user = await fb.currentUser();
+  if (emu) {
+    if (!user || user.uid !== ownerUid) throw stop('sign-in-failed');
+  } else {
+    const ownerSub = await store.getMeta('ownerGoogleSub', '');
+    const step = eraseIdentity({ googleSub, sessionUid: user?.uid || '', sessionSub: fb.googleSubOf(user), ownerUid, ownerSub });
+    if (step === 'other-google') { drive.forget(); throw stop('other-google'); }
+    if (step === 'sign-in') {
+      let res;
+      try { res = await fb.signInFresh(token); } catch (e) { throw stop('sign-in-failed', e); }
+      const after = afterSignIn({ uid: res.user.uid, ownerUid, knewSub: !!ownerSub });
+      if (after !== 'proceed') {
+        // Not the owner's account: nothing of theirs is touched. An account Firebase created just
+        // now, for this sign-in, is empty and is removed again; any other is only signed out.
+        if (res.isNew) await res.user.delete().catch(() => {}); else await fb.signOut().catch(() => {});
+        drive.forget();
+        throw stop(after);
+      }
+      user = res.user;
+    }
+  }
+  try { await fb.reauth(user, token); } catch (e) { throw stop('sign-in-failed', e); }
+
+  // The point of no return is the marker. The stage is saved only once it exists.
+  if (!(await fb.isMarked(ownerUid))) await fb.mark(ownerUid);
+  await store.setMeta('eraseStage', 'started');
+  const books = await store.all('books');
+  const { bookKeyOf } = await import('./catalog.js');
+  const keys = [...new Set(books.map((b) => bookKeyOf(b)).filter(Boolean))];
+  channel?.postMessage('signing-out');
+  pauseForErase();
+  await allLocks(async () => {
+    say('Removing your reviews and friends…');
+    await fb.deletePublic(ownerUid, keys);
+    say('Removing your diary from your account…');
+    await fb.deleteRecords(ownerUid);
+    if (!emu && !skipDrive) {
+      say('Removing your drawings from Google Drive…');
+      try { await drive.deleteAllAppData(); } catch (e) { throw stop('drive', e); }
+    }
+    say('Closing your account…');
+    await fb.reauth(user, token); // the steps above can take a while; Firebase wants a fresh login
+    await fb.deleteUser(user);
+  });
+  await store.setMeta('eraseStage', 'wipe');
+  say('Clearing this phone…');
+  await erasePhone();
+}
+
+// Clears this phone only. Needs no sign-in and removes nothing from the cloud.
+export async function erasePhone() {
+  channel?.postMessage('signing-out');
+  stopAll();
+  await fb.signOut().catch(() => {});
+  try { await store.wipe(); } catch (e) { throw e.message === 'blocked' ? stop('blocked') : e; }
 }
 
 export function start() {

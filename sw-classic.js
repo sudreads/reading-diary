@@ -1,12 +1,12 @@
 // No longer registered by the app. Kept published because a phone last opened before 2.3.3, on a
 // browser without module workers, is still controlled by this file and reaches new versions
 // through it. Offline shell only, no reminders. Keep CACHE and SHELL in step with sw.js.
-const CACHE = 'rd-v22';
+const CACHE = 'rd-v23';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'app.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/caveat-500-latin.woff2',
   'js/app.js', 'js/config.js', 'js/derive.js', 'js/dom.js', 'js/drive.js', 'js/merge.js', 'js/notebook.js',
-  'js/firebase.js', 'js/reviews.js', 'js/social.js', 'js/signout.js', 'js/dedupe.js', 'js/cloud.js', 'js/catalog.js', 'js/explore.js', 'js/friends.js', 'js/activity.js', 'js/session.js',
+  'js/firebase.js', 'js/reviews.js', 'js/social.js', 'js/signout.js', 'js/dedupe.js', 'js/cloud.js', 'js/catalog.js', 'js/explore.js', 'js/friends.js', 'js/activity.js', 'js/session.js', 'js/erase.js',
   'js/reminder.js', 'js/rank.js', 'js/rev.js', 'js/store.js', 'js/sync.js', 'js/syncer.js', 'js/validate.js',
 ];
 

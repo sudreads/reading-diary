@@ -12,8 +12,9 @@ import { dedupePlan } from './dedupe.js';
 import { handleSheet, adminPanel } from './reviews.js';
 import { friendsCard, schedulePublish } from './friends.js';
 import { readingSession, sessionOpen } from './session.js';
+import { eraseMessage } from './erase.js';
 
-const VERSION = '2.5.0';
+const VERSION = '2.6.0';
 const TABS = [
   { id: 'home', label: 'Home', icon: 'home' },
   { id: 'explore', label: 'Explore', icon: 'search' },
@@ -563,8 +564,7 @@ function settingsScreen() {
 
     // Native append() would print a skipped card (false) as the word "false", so filter first.
     box.append(...[
-      fbConfigured() && accountCard(ds, await store.getMeta('deleteJob', false),
-        { uid: await store.getMeta('ownerUid', ''), email: await store.getMeta('ownerEmail', '') }),
+      fbConfigured() && accountCard(ds, { uid: await store.getMeta('ownerUid', ''), email: await store.getMeta('ownerEmail', '') }),
       fbConfigured() && ds.admin && adminPanel(),
       fbConfigured() && friendsCard({ cover, rerender: render }),
       h('div', { class: 'card' },
@@ -611,7 +611,7 @@ function settingsScreen() {
   return box;
 }
 
-function accountCard(ds, deleteUnfinished, owner) {
+function accountCard(ds, owner) {
   const privacy = h('a', { href: 'privacy.html', target: '_blank', rel: 'noopener', class: 'muted small' }, 'Privacy: what is public and how to delete it');
   // Who this diary belongs to - shown whenever the phone is bound to an account.
   const who = owner.uid && h('div', { class: 'whoami' },
@@ -619,19 +619,20 @@ function accountCard(ds, deleteUnfinished, owner) {
     h('div', { class: 'muted small' }, owner.email || ds.email || 'Google account'));
   const signOutBtn = owner.uid && h('button', { class: 'btn', onclick: signOutSheet }, 'Sign out');
   let body;
+  const deleteBtn = h('button', { class: 'btn ghost', onclick: deleteAccountSheet }, 'Delete my account');
   if (ds.account === 'ready') {
     body = [
-      deleteUnfinished && h('p', { class: 'note' }, 'Deleting your public data didn\'t finish. Tap the button below to finish it.'),
-      h('p', { class: 'muted small' }, 'Public: your stars and review on books you finish with "Post publicly" on. Everything else in this diary stays private.'),
-      h('button', { class: 'btn ghost', onclick: async () => {
-        if (!confirm('Delete all your public reviews and your reviews account? Your private diary stays. Your reader name stays reserved and can\'t be reused.')) return;
-        try { await syncer.deleteMyPublicData(); toast('Your public data is deleted'); render(); } catch (e) { toast(`Couldn't finish (${e.code || e.message}) - try again`); }
-      } }, 'Delete my public data'),
+      h('p', { class: 'muted small' }, 'Members see your stars and review on books you finish with "Post publicly" on. Everything else in this diary stays private.'),
+      deleteBtn,
     ];
   } else if (ds.account === 'needs-handle') {
-    body = [h('p', null, 'Pick your reader name to share reviews.'), h('button', { class: 'btn primary', onclick: () => handleSheet(render) }, 'Pick a name')];
+    body = [h('p', null, 'Pick your reader name to share reviews.'),
+      h('div', { class: 'actions' }, h('button', { class: 'btn primary', onclick: () => handleSheet(render) }, 'Pick a name'), deleteBtn)];
   } else if (ds.account === 'wrong-account') {
-    body = [h('p', null, 'This diary belongs to a different Google account. Sign in with that one to back up and share reviews.')];
+    // Not a dead end: the diary on this phone can still be saved to a file, or cleared.
+    body = [h('p', null, 'This diary belongs to a different Google account. Sign in with that one to back up and share reviews.'),
+      h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: downloadBackup }, 'Download backup')),
+      erasePhoneControl()];
   } else if (owner.uid && (!ds.checked || ds.account === 'checking')) {
     body = [h('p', { class: 'muted small' }, 'Connecting to your account…')]; // never a fake "Sign in"
   } else {
@@ -639,6 +640,98 @@ function accountCard(ds, deleteUnfinished, owner) {
       h('button', { class: 'btn primary', onclick: () => syncer.syncNow({ interactive: true }).then(render) }, 'Sign in with Google')];
   }
   return h('div', { class: 'card' }, h('h2', null, 'Reader account'), who, body, signOutBtn && h('div', { class: 'actions' }, signOutBtn), privacy);
+}
+
+// "Erase this phone", always in two taps, always saying what it does not do.
+function erasePhoneControl(onError = (text) => toast(text)) {
+  const warn = h('p', { class: 'note', hidden: true }, 'This clears the diary from this phone only. Anything not yet saved to your account is lost, and nothing is checked as backed up first. Nothing is removed from the cloud.');
+  let armed = false;
+  const btn = h('button', { class: 'btn ghost wide', onclick: async () => {
+    if (!armed) { armed = true; warn.hidden = false; btn.textContent = 'Yes, erase this phone'; btn.classList.add('danger'); return; }
+    btn.disabled = true;
+    try { await syncer.erasePhone(); location.reload(); } catch (e) { btn.disabled = false; onError(eraseMessage(e)); }
+  } }, 'Erase this phone');
+  return h('div', { class: 'stack tight' }, warn, btn);
+}
+
+function deleteAccountSheet() {
+  const steps = h('ul', { class: 'steps-live' });
+  const msg = h('p', { class: 'note', hidden: true });
+  const fail = (text) => { msg.hidden = false; msg.textContent = text; };
+  const go = h('button', { class: 'btn danger', disabled: true }, 'Delete account and diary');
+  const backup = h('button', { class: 'btn', onclick: async () => {
+    backup.disabled = true;
+    await downloadBackup();
+    backup.disabled = false;
+    go.disabled = false;
+  } }, 'Download backup first');
+  const noBackup = h('button', { class: 'link-btn', onclick: () => { go.disabled = false; noBackup.hidden = true; } }, 'I don\'t need a backup');
+  go.onclick = async () => {
+    go.disabled = backup.disabled = true;
+    noBackup.hidden = true;
+    msg.hidden = true;
+    steps.replaceChildren();
+    try {
+      await syncer.deleteAccount({ say: (t) => steps.append(h('li', null, t)) });
+      steps.append(h('li', null, 'Done.'));
+      setTimeout(() => location.reload(), 900);
+    } catch (e) {
+      fail(eraseMessage(e));
+      // Past the point of no return the erase screen takes over; before it, nothing changed.
+      const started = await store.getMeta('eraseStage', '').catch(() => 'wipe');
+      if (started) { go.textContent = 'Continue'; go.disabled = false; go.onclick = () => location.reload(); }
+      else go.disabled = backup.disabled = false;
+    }
+  };
+  sheet('Delete my account', h('div', { class: 'form' },
+    h('p', null, 'This removes, for good:'),
+    h('ul', { class: 'plain-list' },
+      h('li', null, 'your reviews, your friends and the reading card they see'),
+      h('li', null, 'the diary saved in your account, and your drawings in Google Drive'),
+      h('li', null, 'the diary on this phone, and your sign-in')),
+    h('p', { class: 'muted small' }, 'What stays: your reader name stays reserved so nobody can pretend to be you, and books you added to the shared list keep their title and author. Another phone signed in to this account keeps its copy until you erase it there; if it is open right now it can put drawings back into your Drive for up to an hour.'),
+    backup, noBackup, steps, msg, go));
+}
+
+// The only screen while a deletion is unfinished: no tabs, no syncing, no sign-out.
+function eraseScreen(stage) {
+  document.body.classList.add('gated');
+  const steps = h('ul', { class: 'steps-live' });
+  const msg = h('p', { class: 'note', hidden: true });
+  const fail = (text) => { msg.hidden = false; msg.textContent = text; };
+  const reload = h('button', { class: 'btn wide', hidden: true, onclick: () => location.reload() }, 'Reload');
+  const box = h('div', { class: 'gate' });
+  const done = () => fill(box, h('h1', null, 'Your account is deleted'), h('p', null, 'Everything was removed and this phone is clear.'),
+    h('button', { class: 'btn primary', onclick: () => location.reload() }, 'OK'));
+  const stuck = (e) => { fail(eraseMessage(e)); if (e.kind === 'blocked') reload.hidden = false; };
+
+  if (stage === 'wipe') {
+    fill(box, h('h1', null, 'Almost done'), h('p', null, 'Your account is deleted. Clearing this phone…'), msg, reload);
+    syncer.erasePhone().then(done, stuck);
+  } else {
+    let driveFailed = false;
+    const finish = h('button', { class: 'btn primary wide', onclick: () => run(false) }, 'Finish deleting');
+    const skip = h('button', { class: 'btn wide', hidden: true, onclick: () => run(true) }, 'Finish without removing drawings');
+    const run = async (skipDrive) => {
+      finish.disabled = skip.disabled = true;
+      msg.hidden = true;
+      steps.replaceChildren();
+      try { await syncer.deleteAccount({ say: (t) => steps.append(h('li', null, t)), skipDrive }); done(); } catch (e) {
+        stuck(e);
+        if (e.kind === 'drive') {
+          if (driveFailed) { skip.hidden = false; fail(`${eraseMessage(e)} Or finish without them and remove them yourself: in Google Drive open Settings, Manage apps, Reading Diary, Delete hidden app data.`); }
+          driveFailed = true;
+        }
+        finish.disabled = skip.disabled = false;
+      }
+    };
+    fill(box, h('h1', null, 'Deleting isn\'t finished'),
+      h('p', null, 'Deleting this account was started and has not finished. Nothing new can be saved to it. Finish it here, or clear this phone.'),
+      finish, skip, steps, msg, reload,
+      h('button', { class: 'btn wide', onclick: downloadBackup }, 'Download backup'),
+      erasePhoneControl(fail));
+  }
+  fill(main(), box);
 }
 
 function signOutSheet() {
@@ -928,6 +1021,10 @@ async function boot() {
     return;
   }
   navigator.storage?.persist?.().catch(() => {});
+  if (await store.getMeta('deleteJob', false)) await store.setMeta('deleteJob', false); // 2.5 and earlier; replaced by eraseStage
+  // An unfinished account deletion comes before everything else: no shell, no syncing.
+  const eraseStage = await store.getMeta('eraseStage', '');
+  if (eraseStage) { setupServiceWorker(); eraseScreen(eraseStage); return; }
   try { const t = localStorage.getItem('rd-tab'); const tab = OLD_TABS[t] || t; if (SCREENS[tab]) ui.tab = tab; } catch { /* ignore */ }
   setupShell();
   store.onChange(() => {
@@ -950,6 +1047,11 @@ async function boot() {
     // Settings shows who you are and Explore needs the account: redraw them when the check settles (not on every tick).
     const acct = `${s.account}|${s.handle}|${s.checked}`;
     if (acct !== lastAccount) { lastAccount = acct; schedulePublish(); if (ui.tab === 'me' || ui.tab === 'explore') { pendingRender = true; maybeRender(); } }
+    if (s.erasePending && !s.erasing) { // this account is being deleted: only the erase screen from here
+      s.erasePending = false;
+      flushNotebook().finally(() => location.reload());
+      return;
+    }
     if (s.signedOut) { // another tab signed out: this one's diary is gone
       document.body.classList.add('gated');
       clear(main()).append(h('div', { class: 'gate' }, h('h1', null, 'Signed out'), h('p', null, 'You signed out in another tab.'),

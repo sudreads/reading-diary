@@ -99,6 +99,19 @@ async function create(name, body, type) {
   return call(`${UPLOAD}/files?uploadType=multipart&fields=id,modifiedTime`, { method: 'POST', headers: { 'Content-Type': contentType }, body: blob });
 }
 
+// Removes everything this app keeps in the owner's Drive (drawings and old device files). Lists
+// again until nothing is left, so files that arrive while it runs go too.
+export async function deleteAllAppData() {
+  for (let pass = 0; pass < 6; pass++) {
+    const files = await listByName('trashed = false');
+    if (!files.length) return;
+    for (const f of files) {
+      try { await call(`${API}/files/${q(f.id)}`, { method: 'DELETE' }, 'raw'); } catch (e) { if (e.message !== 'drive-404') throw e; }
+    }
+  }
+  if ((await listByName('trashed = false')).length) throw new Error('drive-not-empty');
+}
+
 // The shape sync.js expects.
 export const driveApi = {
   listDeviceFiles: () => listByName("name contains 'device-' and trashed = false"),

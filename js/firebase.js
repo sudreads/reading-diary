@@ -302,38 +302,87 @@ export async function dismissReport(id) {
   await fs.deleteDoc(fs.doc(db, 'reports', id));
 }
 
-// Delete everything public this account wrote (friendships and activity card too), then the Firebase account. users/{uid} and the
-// handle stay behind on purpose: they reserve the name forever (see privacy.html).
-// Re-authenticates first with a fresh Google token: Firebase refuses user.delete() on an old
-// session, and failing that after the reviews were gone would leave the job half done.
-export async function deleteMyPublicData(uid, workIds, accessToken) {
-  const { db, fs, fa, auth } = await load();
-  if (auth.currentUser?.uid !== uid) throw new Error('not-signed-in-as-owner');
-  await fa.reauthenticateWithCredential(auth.currentUser, fa.GoogleAuthProvider.credential(null, accessToken));
-  // Every review this account wrote, wherever it is (books/ and 1.x works/), in pages of 30 - not
-  // just the books still in this phone's diary. The local keys are a belt-and-braces second pass.
+// ----- deleting an account (decisions in erase.js, the flow in syncer.js) -----
+
+export const emulated = () => EMULATED;
+export const googleSubOf = (user) => user?.providerData?.find((p) => p.providerId === 'google.com')?.uid || '';
+
+// The permanent marker: once it exists the rules refuse every write from this account.
+export async function isMarked(uid) {
+  const { db, fs } = await load();
+  return (await fs.getDoc(fs.doc(db, 'deleting', uid))).exists();
+}
+export async function mark(uid) {
+  const { db, fs } = await load();
+  await fs.setDoc(fs.doc(db, 'deleting', uid), { at: fs.serverTimestamp() });
+}
+
+// Signs in with a fresh Google token. isNew: Firebase created the account for this very sign-in.
+export async function signInFresh(accessToken) {
+  const { auth, fa } = await load();
+  const res = await fa.signInWithCredential(auth, fa.GoogleAuthProvider.credential(null, accessToken));
+  return { user: res.user, isNew: !!fa.getAdditionalUserInfo(res)?.isNewUser };
+}
+
+// Firebase only deletes a user who signed in moments ago. (The emulator has no Google: it takes
+// the same fake id token emuSignIn uses.)
+export async function reauth(user, accessToken) {
+  const { fa } = await load();
+  const cred = EMULATED
+    ? fa.GoogleAuthProvider.credential(JSON.stringify({ sub: user.email.replace(/[^a-z0-9]/gi, '').slice(0, 20), email: user.email, email_verified: true }))
+    : fa.GoogleAuthProvider.credential(null, accessToken);
+  await fa.reauthenticateWithCredential(user, cred);
+}
+
+export async function deleteUser(user) { await user.delete(); }
+
+// Everything other members can see of this account. Requests go first, then friendships, so
+// nobody can accept a request into a friendship that is about to be removed; a last pass catches
+// anything that arrived meanwhile. Safe to run again after an interruption.
+export async function deletePublic(uid, bookKeys) {
+  const { db, fs } = await load();
+  const clearRequests = async () => {
+    for (;;) {
+      const { incoming, outgoing } = await friendRequests(uid);
+      if (!incoming.length && !outgoing.length) break;
+      for (const r of [...incoming, ...outgoing]) await fs.deleteDoc(fs.doc(db, 'friendRequests', r.id));
+    }
+  };
+  const clearFriends = async () => {
+    for (;;) {
+      const list = await fs.getDocs(fs.query(fs.collection(db, 'friends', uid, 'list'), fs.limit(100)));
+      if (list.empty) break;
+      for (const d of list.docs) await unfriend(uid, d.id);
+    }
+  };
+  await clearRequests();
+  await clearFriends();
+  // Every review, wherever it is (books/ and 1.x works/), in pages of 30 - then the keys this
+  // phone knows as a second pass.
   for (;;) {
     const mine = await fs.getDocs(fs.query(fs.collectionGroup(db, 'reviews'), fs.where('uid', '==', uid), fs.limit(30)));
     if (mine.empty) break;
     for (const d of mine.docs) await fs.deleteDoc(d.ref);
   }
-  for (const k of workIds) {
+  for (const k of bookKeys) {
     await fs.deleteDoc(fs.doc(db, 'books', k, 'reviews', uid));
     if (k.startsWith('ol:')) await fs.deleteDoc(fs.doc(db, 'works', k.slice(3), 'reviews', uid));
   }
-  const mine = await fs.getDocs(fs.query(fs.collection(db, 'reports'), fs.where('uid', '==', uid)));
-  for (const d of mine.docs) await fs.deleteDoc(d.ref);
-  // Friends stop seeing you: every friendship (both edges), every request, and your activity card.
-  for (;;) {
-    const list = await fs.getDocs(fs.query(fs.collection(db, 'friends', uid, 'list'), fs.limit(100)));
-    if (list.empty) break;
-    for (const d of list.docs) await unfriend(uid, d.id);
-  }
-  for (;;) { // in pages, until none are left
-    const { incoming, outgoing } = await friendRequests(uid);
-    if (!incoming.length && !outgoing.length) break;
-    for (const r of [...incoming, ...outgoing]) await fs.deleteDoc(fs.doc(db, 'friendRequests', r.id));
-  }
+  const reports = await fs.getDocs(fs.query(fs.collection(db, 'reports'), fs.where('uid', '==', uid)));
+  for (const d of reports.docs) await fs.deleteDoc(d.ref);
   await fs.deleteDoc(fs.doc(db, 'activity', uid));
-  await auth.currentUser.delete();
+  await clearRequests();
+  await clearFriends();
+}
+
+// The private diary saved in the account. Allowed by the rules only once the marker exists.
+export async function deleteRecords(uid) {
+  const { db, fs } = await load();
+  for (;;) {
+    const page = await fs.getDocs(fs.query(fs.collection(db, 'users', uid, 'records'), fs.limit(300)));
+    if (page.empty) break;
+    const b = fs.writeBatch(db);
+    for (const d of page.docs) b.delete(d.ref);
+    await b.commit();
+  }
 }
