@@ -15,7 +15,7 @@ import { shareStreak } from './share.js';
 import { readingSession, sessionOpen } from './session.js';
 import { eraseMessage } from './erase.js';
 
-const VERSION = '3.1.0';
+const VERSION = '3.1.1';
 const TABS = [
   { id: 'home', label: 'Home', icon: 'home' },
   { id: 'explore', label: 'Explore', icon: 'search' },
