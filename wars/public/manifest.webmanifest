@@ -1,0 +1,16 @@
+{
+  "name": "Food Wars / Beer Wars",
+  "short_name": "Food Wars",
+  "description": "מי אוכל, שותה וחוגג יותר? כל נקודה מחייבת תמונה.",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14100c",
+  "theme_color": "#14100c",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

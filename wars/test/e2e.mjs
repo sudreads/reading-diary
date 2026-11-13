@@ -1,0 +1,219 @@
+// End-to-end: three phones play a whole game in real browsers.
+// Run: node test/e2e.mjs   (screenshots land in test/shots/)
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { createApp } from '../server.js';
+
+const require = createRequire(import.meta.url);
+const { chromium } = require('playwright');
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SHOTS = path.join(HERE, 'shots');
+fs.mkdirSync(SHOTS, { recursive: true });
+
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fw-e2e-'));
+let clock = 0; // added to the real time, to step over the anti-spam cooldown
+const app = createApp({ dataDir, now: () => Date.now() + clock });
+await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+const base = `http://127.0.0.1:${app.server.address().port}`;
+
+const browser = await chromium.launch();
+const errors = [];
+
+async function phone(name) {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, locale: 'he-IL', hasTouch: true, isMobile: true });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: console: ${m.text()}`); });
+  return page;
+}
+
+// A "photo": a screenshot of a big emoji on a coloured page.
+async function fakePhoto(emoji, color) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 1000 } });
+  await page.setContent(`<body style="margin:0;display:grid;place-items:center;height:100vh;background:${color};font-size:420px">${emoji}</body>`);
+  const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
+  await page.close();
+  return { name: 'photo.jpg', mimeType: 'image/jpeg', buffer };
+}
+
+async function addPoint(page, catLabel, photo, note) {
+  clock += 4000;
+  await page.getByRole('tab', { name: 'משחק' }).click();
+  const chooser = page.waitForEvent('filechooser');
+  await page.locator('.action', { hasText: catLabel }).click();
+  await (await chooser).setFiles(photo);
+  await page.locator('.sheet-panel img.preview').waitFor();
+  if (note) await page.getByPlaceholder('כיתוב (לא חובה)').fill(note);
+  await page.getByRole('button', { name: /זה נחשב/ }).click();
+  await page.locator('.sheet-panel').waitFor({ state: 'detached' });
+}
+
+const shot = (page, name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
+
+try {
+  const photos = {
+    beer: await fakePhoto('🍺', '#c98a1a'), food: await fakePhoto('🍔', '#8a3b1a'),
+    beach: await fakePhoto('🏖️', '#1a7fa8'), view: await fakePhoto('🌄', '#3a5a2a'),
+  };
+
+  // --- the boss creates a game ---
+  const boss = await phone('boss');
+  await boss.goto(base);
+  assert.equal(await boss.getByText('null', { exact: true }).count(), 0);
+  await shot(boss, '01-home');
+  await boss.getByRole('button', { name: 'להקים משחק חדש' }).click();
+  await boss.locator('.toast.show.bad').waitFor(); // no name yet
+  await boss.getByPlaceholder('השם שלך').fill('שירן');
+  await boss.getByRole('button', { name: 'להקים משחק חדש' }).click();
+  await boss.getByPlaceholder(/המשחק של/).fill('סופ״ש באילת');
+  await boss.locator('.chip', { hasText: 'לשתות מים' }).click(); // drop water
+  await boss.getByLabel('אימוג׳י').fill('🍕');
+  await boss.getByLabel('שם האתגר').fill('לאכול פיצה');
+  await boss.getByRole('button', { name: 'הוספה' }).click();
+  await shot(boss, '02-create');
+  await boss.getByRole('button', { name: 'להקים משחק', exact: true }).click();
+  await boss.locator('.code').waitFor();
+  const code = (await boss.locator('.code').textContent()).trim();
+  assert.match(code, /^[A-Z2-9]{5}$/);
+
+  // --- two friends join: one by code, one by invite link ---
+  const dana = await phone('dana');
+  await dana.goto(base);
+  await dana.getByPlaceholder('השם שלך').fill('דנה');
+  await dana.getByPlaceholder('קוד משחק').fill(code.toLowerCase());
+  await dana.getByRole('button', { name: 'להצטרף למשחק' }).click();
+  await dana.getByText('ברשימת ההמתנה').waitFor();
+  await shot(dana, '03-waiting');
+
+  const yossi = await phone('yossi');
+  await yossi.goto(`${base}/#/join/${code}`);
+  assert.equal(await yossi.getByPlaceholder('קוד משחק').inputValue(), code);
+  await yossi.getByPlaceholder('השם שלך').fill('יוסי');
+  await yossi.getByRole('button', { name: 'להצטרף למשחק' }).click();
+  await yossi.getByText('ברשימת ההמתנה').waitFor();
+
+  // --- the boss sees the waiting list and lets them in ---
+  await boss.getByText('רשימת המתנה (2)').waitFor();
+  await shot(boss, '04-lobby-waiting-list');
+  await boss.getByRole('button', { name: 'להכניס את דנה' }).click();
+  await dana.getByText('מחכים שהבוס יתחיל').waitFor();
+  await boss.getByRole('button', { name: 'להכניס את יוסי' }).click();
+  await yossi.getByText('בקבוצה (3)').waitFor();
+  await shot(yossi, '05-lobby-member');
+  assert.equal(await dana.getByRole('button', { name: /להתחיל את המשחק/ }).count(), 0); // only the boss starts
+
+  // --- start ---
+  await boss.locator('#hours').selectOption('24');
+  await boss.getByRole('button', { name: /להתחיל את המשחק/ }).click();
+  for (const p of [boss, dana, yossi]) await p.locator('.action').first().waitFor();
+  assert.equal(await dana.locator('.action').count(), 6); // 5 defaults (no water) + pizza
+  assert.equal(await dana.locator('.action', { hasText: 'לשתות מים' }).count(), 0);
+  await dana.locator('#timer').waitFor();
+
+  // --- play: no photo, no point ---
+  await addPoint(dana, 'לשתות בירה', photos.beer, 'לחיים! 🍻');
+  await addPoint(dana, 'לשתות בירה', photos.beer);
+  await addPoint(dana, 'להיות בים', photos.beach);
+  await addPoint(yossi, 'לאכול פיצה', photos.food, 'משולש שלישי');
+  await addPoint(yossi, 'לצלם נוף', photos.view);
+  await addPoint(boss, 'לשתות בירה', photos.beer);
+  assert.equal((await dana.locator('.action', { hasText: 'לשתות בירה' }).locator('.action-count').textContent()).trim(), '2');
+  await dana.locator('.toast').waitFor({ state: 'visible' });
+  await dana.waitForTimeout(2300); // let the confetti fall
+  await shot(dana, '06-play');
+
+  // Picking a file and closing the sheet gives nothing.
+  {
+    clock += 4000;
+    const chooser = yossi.waitForEvent('filechooser');
+    await yossi.locator('.action', { hasText: 'לשתות בירה' }).click();
+    await (await chooser).setFiles(photos.beer);
+    await yossi.locator('.sheet-panel img.preview').waitFor();
+    await yossi.getByRole('button', { name: 'סגירה' }).click();
+    assert.equal((await yossi.locator('.action', { hasText: 'לשתות בירה' }).locator('.action-count').textContent()).trim(), '0');
+  }
+
+  // --- live board ---
+  await boss.getByRole('tab', { name: 'טבלה' }).click();
+  await boss.locator('.rank').first().waitFor();
+  const names = await boss.locator('.rank .row-main > span:first-child').allTextContents();
+  assert.deepEqual(names, ['דנה', 'יוסי', 'שירן']);
+  await shot(boss, '07-board');
+  await boss.locator('.chip', { hasText: 'לשתות בירה' }).click();
+  assert.deepEqual(await boss.locator('.rank .count').allTextContents(), ['2', '1', '0']);
+
+  // --- gallery + lightbox ---
+  await yossi.getByRole('tab', { name: /גלריה/ }).click();
+  await yossi.locator('.tile').first().waitFor();
+  assert.equal(await yossi.locator('.tile').count(), 6);
+  await yossi.waitForFunction(() => [...document.querySelectorAll('.tile img')].every((i) => i.complete && i.naturalWidth > 0));
+  await shot(yossi, '08-gallery');
+  await yossi.locator('.chip', { hasText: 'לשתות בירה' }).click();
+  assert.equal(await yossi.locator('.tile').count(), 3);
+  await yossi.locator('select').selectOption({ label: 'דנה' });
+  assert.equal(await yossi.locator('.tile').count(), 2);
+  await yossi.locator('.tile').last().click();
+  await yossi.getByText('לחיים! 🍻').waitFor();
+  assert.equal(await yossi.getByRole('button', { name: /למחוק/ }).count(), 0); // not his photo
+  await shot(yossi, '09-lightbox');
+  await yossi.getByRole('button', { name: 'סגירה' }).click();
+
+  // --- a latecomer joins mid-game; the boss lets him in from the game screen ---
+  const late = await phone('late');
+  await late.goto(`${base}/#/join/${code}`);
+  await late.getByPlaceholder('השם שלך').fill('מאחר');
+  await late.getByRole('button', { name: 'להצטרף למשחק' }).click();
+  await late.getByText('ברשימת ההמתנה').waitFor();
+  await boss.getByRole('button', { name: 'להכניס את מאחר' }).click();
+  await late.locator('.action').first().waitFor();
+
+  // --- the boss deletes a suspicious photo ---
+  await boss.getByRole('tab', { name: /גלריה/ }).click();
+  await boss.locator('.tile').first().click();
+  await boss.getByRole('button', { name: /למחוק/ }).click();
+  await boss.getByRole('button', { name: 'למחוק', exact: true }).click();
+  await boss.getByRole('tab', { name: 'גלריה (5)' }).waitFor();
+
+  // --- reload keeps you in the game ---
+  await dana.reload();
+  await dana.locator('.action').first().waitFor();
+  assert.equal((await dana.locator('.stat strong').first().textContent()).trim(), '3');
+
+  // --- the end ---
+  await boss.getByRole('tab', { name: 'משחק' }).click();
+  await boss.getByRole('button', { name: /לסיים את המשחק/ }).click();
+  await boss.getByRole('button', { name: 'לסיים', exact: true }).click();
+  for (const p of [boss, dana, yossi, late]) await p.locator('.winner').waitFor();
+  assert.equal((await dana.locator('.winner h2').textContent()).trim(), 'דנה');
+  await dana.waitForTimeout(2300);
+  await shot(dana, '10-results');
+  await dana.evaluate(() => scrollTo(0, document.body.scrollHeight));
+  await shot(dana, '11-results-bottom');
+  await dana.locator('.row.link', { hasText: 'להיות בים' }).click(); // category champion -> its gallery
+  assert.equal(await dana.locator('.tile').count(), 1);
+  assert.equal(await dana.locator('.action').count(), 0); // no more points
+
+  // --- home lists the game ---
+  await dana.getByRole('button', { name: 'חזרה לדף הבית' }).click();
+  await dana.getByText('המשחקים שלי').waitFor();
+  await dana.getByRole('button', { name: /סופ״ש באילת/ }).click();
+  await dana.locator('.winner').waitFor();
+
+  for (const p of [boss, dana, yossi, late]) assert.equal(await p.getByText('null', { exact: true }).count(), 0);
+  assert.deepEqual(errors, []);
+  console.log(`e2e ok - game ${code}, screenshots in ${SHOTS}`);
+} catch (e) {
+  console.error('page errors:', errors);
+  throw e;
+} finally {
+  await browser.close();
+  app.server.closeAllConnections();
+  await new Promise((r) => app.server.close(r));
+  await app.flush();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+}
