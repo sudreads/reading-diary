@@ -1,0 +1,25 @@
+# Render Blueprint for Food Wars. In Render: New > Blueprint, pick this repository and branch,
+# and set the Blueprint path to wars/render.yaml.
+services:
+  - type: web
+    name: food-wars
+    runtime: node
+    rootDir: wars
+    buildCommand: node --check server.js
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    numInstances: 1 # the server keeps state in memory and on one disk: never more than one
+    plan: starter # the smallest plan that can attach a disk
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATA_DIR
+        value: /var/data
+      - key: TRUST_PROXY
+        value: "1"
+      - key: MAX_STORAGE_MB
+        value: "900" # a little under the disk size below
+    disk:
+      name: food-wars-data
+      mountPath: /var/data
+      sizeGB: 1

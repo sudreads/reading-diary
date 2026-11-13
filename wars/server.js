@@ -87,7 +87,7 @@ function parseCategories(input) {
 
 export function createApp({
   dataDir, now = () => Date.now(), createsPerHour = 20, joinsPerMinute = 30, joinsPerGameHour = 40, requestsPerMinute = 3000, playerRequestsPerMinute = 900, codeMisses = 15,
-  trustProxy = 0, maxGames = 3000, maxTotalBytes = 5 * 1024 ** 3,
+  trustProxy = 0, quiet = true, maxGames = 3000, maxTotalBytes = 5 * 1024 ** 3,
 }) {
   const gamesDir = path.join(dataDir, 'games');
   const photosDir = path.join(dataDir, 'photos');
@@ -267,7 +267,14 @@ export function createApp({
   const sameHost = (origin, host) => { try { return new URL(origin).host === host; } catch { return false; } };
   // X-Forwarded-For is whatever the sender typed unless a proxy we run overwrote it. Only the
   // entry added by our own proxy (counted from the right) is believed, and only when configured.
+  let hopsReported = false;
   function ipOf(req) {
+    if (!hopsReported && req.headers['x-forwarded-for'] && !quiet) {
+      // Printed once, so whoever runs the server can set TRUST_PROXY to match their hosting.
+      hopsReported = true;
+      const n = String(req.headers['x-forwarded-for']).split(',').length;
+      console.log(`First proxied request: X-Forwarded-For has ${n} address(es); TRUST_PROXY is ${trustProxy}. It should be the number of proxies you run in front of this server.`);
+    }
     if (trustProxy > 0) {
       const hops = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
       const ip = hops[hops.length - trustProxy];
@@ -558,7 +565,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const dataDir = process.env.DATA_DIR || path.join(HERE, 'data');
   const trustProxy = Math.max(0, Math.floor(Number(process.env.TRUST_PROXY || 0)) || 0);
   const maxTotalBytes = (Number(process.env.MAX_STORAGE_MB) || 5120) * 1024 * 1024;
-  const { server, flush } = createApp({ dataDir, trustProxy, maxTotalBytes });
+  const { server, flush } = createApp({ dataDir, trustProxy, maxTotalBytes, quiet: false });
   server.listen(port, () => {
     console.log(`Food Wars on http://localhost:${port}  (data: ${dataDir})`);
     if (!trustProxy) console.log('TRUST_PROXY is not set: behind a reverse proxy every visitor counts as one address for rate limits.');

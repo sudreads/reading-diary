@@ -28,12 +28,24 @@ npm start            # http://localhost:8787
 | `TRUST_PROXY` | `0` | כמה פרוקסי משלכם עומדים לפני השרת. באירוח מנוהל (Render, Fly, Railway) זה בדרך כלל `1` |
 | `MAX_STORAGE_MB` | `5120` | תקרה לכל התמונות יחד. כשהיא מתמלאת העלאות נדחות |
 
-כדי שחברים יצטרפו מהטלפון השרת צריך כתובת ציבורית עם HTTPS. כל שירות שמריץ Docker או Node מתאים
-(Render, Fly.io, Railway, VPS), כל עוד `DATA_DIR` יושב על דיסק קבוע:
+כדי שחברים יצטרפו מהטלפון השרת צריך כתובת ציבורית עם HTTPS ודיסק קבוע ל-`DATA_DIR`.
+
+### הדרך הקצרה: Render
+
+1. נכנסים ל-render.com ומתחברים עם GitHub.
+2. New > Blueprint, בוחרים את המאגר ואת הענף, ובשדה Blueprint path כותבים `wars/render.yaml`.
+3. מאשרים. מקבלים כתובת `https://food-wars-XXXX.onrender.com` ושולחים אותה לחברים.
+
+הקובץ `render.yaml` מגדיר שירות אחד, דיסק של 1GB לתמונות ואת משתני הסביבה. דיסק קבוע דורש תוכנית בתשלום;
+בלי דיסק כל המשחקים והתמונות נמחקים בכל הפעלה מחדש.
+
+אחרי העלייה כדאי להציץ בלוג: השרת מדפיס פעם אחת כמה כתובות יש ב-`X-Forwarded-For`, וכך אפשר לוודא ש-`TRUST_PROXY` מתאים.
+
+### כל אירוח אחר (Fly.io, Railway, VPS)
 
 ```sh
 docker build -t food-wars wars
-docker run -p 8787:8787 -v foodwars-data:/data food-wars
+docker run -p 8787:8787 -v foodwars-data:/data -e TRUST_PROXY=1 food-wars
 ```
 
 השרת הוא תהליך אחד ששומר מצב בזיכרון ובקבצים, אז מריצים עותק אחד בלבד.
