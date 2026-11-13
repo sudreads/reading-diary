@@ -151,8 +151,8 @@ test('points need a real photo, an active game and a member', async () => {
 
   const s = await state(g.code, g.token);
   assert.equal(s.entries.length, 2);
-  assert.match(s.entries[0].photo, new RegExp(`^/photos/${g.code}/[\\w-]+\\.png$`));
-  const photo = await call('GET', s.entries[0].photo);
+  assert.match(s.entries[0].photo, new RegExp(`^/api/games/${g.code}/photos/[\\w-]+\\.png$`));
+  const photo = await call('GET', s.entries[0].photo, { token: dana.token });
   assert.equal(photo.status, 200);
   assert.equal(photo.headers.get('content-type'), 'image/png');
   assert.equal(photo.headers.get('x-content-type-options'), 'nosniff');
@@ -171,7 +171,7 @@ test('deleting: own photos while active, the boss any time, nobody else', async 
 
   assert.equal((await call('DELETE', `/api/games/${g.code}/entries/${a}`, { token: yossi.token })).status, 403);
   assert.equal((await call('DELETE', `/api/games/${g.code}/entries/${a}`, { token: dana.token })).status, 200);
-  assert.equal((await call('GET', file)).status, 404); // the file goes too
+  assert.equal((await call('GET', file, { token: g.token })).status, 404); // the file goes too
   assert.equal((await call('DELETE', `/api/games/${g.code}/entries/${a}`, { token: dana.token })).status, 404);
 
   await call('POST', `/api/games/${g.code}/end`, { token: g.token });
@@ -301,7 +301,7 @@ test('static files, path traversal, cross-origin posts', async () => {
   assert.equal((await call('PUT', '/app.js', { raw: JPEG })).status, 405);
   assert.equal((await call('GET', '/app.js')).status, 200);
   assert.equal((await call('GET', '/..%2fserver.js')).status, 404);
-  assert.equal((await call('GET', '/photos/AAAAA/..%2f..%2fgames%2fx.json')).status, 404);
+  assert.equal((await call('GET', '/photos/AAAAAA/x.jpg')).status, 404); // no public photo path at all
   assert.equal((await call('GET', '/nope.txt')).status, 404);
   assert.equal((await call('POST', '/api/games', { json: { playerName: 'x' }, headers: { Origin: 'https://evil.example' } })).status, 403);
   assert.equal((await call('POST', '/api/games', { json: { playerName: 'x' }, headers: { Origin: 'null' } })).status, 403);
@@ -499,7 +499,7 @@ test('photos: an upload that is HTML inside a JPEG is still served as a harmless
   await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
   const polyglot = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('<html><script>alert(document.domain)</script>')]);
   assert.equal((await point(g.code, g.token, 'beer', polyglot)).status, 201);
-  const photo = await call('GET', (await state(g.code, g.token)).entries[0].photo);
+  const photo = await call('GET', (await state(g.code, g.token)).entries[0].photo, { token: g.token });
   assert.equal(photo.headers.get('content-type'), 'image/jpeg');
   assert.equal(photo.headers.get('x-content-type-options'), 'nosniff');
   assert.match(photo.headers.get('content-security-policy'), /default-src 'none'; sandbox/);
@@ -512,12 +512,25 @@ test('privacy: waiting, removed and outside players learn nothing about the phot
   await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: dana.playerId } });
   await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
   await point(g.code, dana.token);
+  // A photo link opens only with a member's token: not bare, not for the waiting list,
+  // not for a member of another game, and not for a file from another game.
+  const link = (await state(g.code, g.token)).entries[0].photo;
+  const other = await newGame();
+  assert.equal((await call('GET', link, { token: dana.token })).status, 200);
+  assert.equal((await call('GET', link)).status, 401);
+  assert.equal((await call('GET', `${link}?token=${dana.token}`)).status, 401);
+  assert.equal((await call('GET', link, { token: troll.token })).status, 403);
+  assert.equal((await call('GET', link, { token: other.token })).status, 401);
+  assert.equal((await call('GET', link.replace(g.code, other.code), { token: other.token })).status, 404);
+  assert.equal((await call('GET', `/api/games/${g.code}/photos/..%2f..%2fgames%2f${g.code}.json`, { token: g.token })).status, 404);
+  assert.equal((await call('GET', link.replace('/api/games/', '/').replace('/photos/', '/').replace(/^\/(\w+)\//, '/photos/$1/'))).status, 404);
   for (const token of [troll.token]) {
     const s = await state(g.code, token);
     assert.deepEqual([s.entries, s.players], [[], []]);
     assert.equal(JSON.stringify(s).includes('/photos/'), false);
   }
   await call('POST', `/api/games/${g.code}/kick`, { token: g.token, json: { playerId: dana.playerId } });
+  assert.equal((await call('GET', link, { token: dana.token })).status, 403); // removed: the link she had is dead
   const out = await state(g.code, dana.token);
   assert.deepEqual([out.me.status, out.entries, out.players], ['out', [], []]);
   // Nothing in any view ever carries a token or its hash, or another player's secrets.

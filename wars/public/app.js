@@ -81,9 +81,56 @@ function disconnect() {
   if (app.stream) { app.stream.close(); app.stream = null; }
 }
 
+// ----- photos -----
+// Photos are private to the group, so a plain <img src> cannot load them: each one is fetched
+// with the player's token and shown from memory.
+const photoCache = new Map(); // photo path -> { url } once loaded, or { promise } while loading
+
+function forgetPhotos() {
+  for (const item of photoCache.values()) if (item.url) URL.revokeObjectURL(item.url);
+  photoCache.clear();
+}
+
+function loadPhoto(path) {
+  let item = photoCache.get(path);
+  if (!item) {
+    const token = session()?.token;
+    item = {};
+    item.promise = fetch(path, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => { if (!res.ok) throw new Error(`photo ${res.status}`); return res.blob(); })
+      .then((blob) => { if (photoCache.get(path) !== item) throw new Error('left the game'); item.url = URL.createObjectURL(blob); return item.url; });
+    item.promise.catch(() => { if (photoCache.get(path) === item) photoCache.delete(path); }); // a later view tries again
+    photoCache.set(path, item);
+  }
+  return item;
+}
+
+const photoWatcher = 'IntersectionObserver' in window ? new IntersectionObserver((seen) => {
+  for (const entry of seen) {
+    if (!entry.isIntersecting) continue;
+    photoWatcher.unobserve(entry.target);
+    fillPhoto(entry.target);
+  }
+}, { rootMargin: '300px' }) : null;
+
+function fillPhoto(img) {
+  loadPhoto(img.dataset.photo).promise.then((url) => { img.src = url; }, () => img.classList.add('broken'));
+}
+
+// An <img> for a game photo: instant when already loaded, otherwise fetched when it nears the screen.
+function photoImg(path, props = {}) {
+  const img = h('img', { alt: '', ...props, 'data-photo': path });
+  const ready = photoCache.get(path)?.url;
+  if (ready) img.src = ready;
+  else if (photoWatcher && !props.eager) photoWatcher.observe(img);
+  else fillPhoto(img);
+  return img;
+}
+
 function openGame(code) {
   if (app.code === code && app.stream) return render();
   disconnect();
+  forgetPhotos();
   app.code = code; app.game = null; app.tab = 'play';
   app.boardCat = 'all'; app.galleryCat = 'all'; app.galleryPlayer = 'all';
   render();
@@ -472,7 +519,7 @@ function feed(g, max) {
       const c = g.categories.find((x) => x.id === e.cat);
       return h('button', { class: 'row link', type: 'button', onclick: () => openLightbox(g, e.id) },
         avatar(p), h('span', { class: 'row-main' }, `${p?.name || '?'} ${c?.emoji || ''}`, h('span', { class: 'muted small' }, ` ${timeAgo(e.ts, serverNow())}`)),
-        h('img', { class: 'thumb', src: e.photo, alt: '', loading: 'lazy' }));
+        photoImg(e.photo, { class: 'thumb' }));
     })));
 }
 
@@ -602,7 +649,7 @@ function galleryView(g) {
       const p = g.players.find((x) => x.id === e.playerId);
       const c = g.categories.find((x) => x.id === e.cat);
       return h('button', { class: 'tile', type: 'button', 'aria-label': `${p?.name || ''} ${c?.label || ''}`, onclick: () => openLightbox(g, e.id) },
-        h('img', { src: e.photo, alt: '', loading: 'lazy' }),
+        photoImg(e.photo),
         h('span', { class: 'tile-tag' }, `${c?.emoji || ''} ${p?.name || ''}`));
     })) : h('p', { class: 'center-note' }, 'אין כאן תמונות עדיין'));
 }
@@ -620,7 +667,7 @@ function openLightbox(g, entryId) {
     const canDelete = g.me.isHost || (e.playerId === g.me.id && g.status === 'active');
     const panel = openSheet(
       h('div', { class: 'row' }, avatar(p), h('span', { class: 'row-main' }, h('span', {}, p?.name || '?'), h('span', { class: 'muted small' }, `${c?.emoji || ''} ${c?.label || ''} · ${clock(e.ts)}`))),
-      h('img', { class: 'preview', src: e.photo, alt: `${p?.name || ''}: ${c?.label || ''}` }),
+      photoImg(e.photo, { class: 'preview', alt: `${p?.name || ''}: ${c?.label || ''}`, eager: true }),
       e.note ? h('p', { class: 'note' }, e.note) : null,
       h('div', { class: 'pager' },
         h('button', { class: 'btn small ghost', type: 'button', disabled: i === 0, onclick: () => { i--; draw(); } }, '→ חדש יותר'),

@@ -158,7 +158,7 @@ export function createApp({
     return {
       ...base, players: visible.map(pub),
       waitingCount: game.players.filter((p) => p.status === 'waiting').length,
-      entries: game.entries.map((e) => ({ id: e.id, playerId: e.playerId, cat: e.cat, photo: `/photos/${game.code}/${e.file}`, ts: e.ts, note: e.note || '' })),
+      entries: game.entries.map((e) => ({ id: e.id, playerId: e.playerId, cat: e.cat, photo: `/api/games/${game.code}/photos/${e.file}`, ts: e.ts, note: e.note || '' })),
     };
   }
 
@@ -438,14 +438,17 @@ export function createApp({
     });
   }
 
-  async function servePhoto(res, code, file) {
-    if (!/^[A-Z0-9]+$/.test(code) || !/^[A-Za-z0-9_-]+\.(jpg|png|webp)$/.test(file)) throw new HttpError(404, 'not-found');
-    const full = path.join(photosDir, code, file);
+  // Photos are for members only: the request carries the player's token like every other call,
+  // and the file must be one of this game's entries. A copied link opens nothing.
+  async function servePhoto(game, me, res, file) {
+    requireIn(me);
+    if (!game.entries.some((e) => e.file === file)) throw new HttpError(404, 'not-found');
+    const full = path.join(photosDir, game.code, file);
     let stat;
     try { stat = await fsp.stat(full); } catch { throw new HttpError(404, 'not-found'); }
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file)], 'Content-Length': stat.size,
-      'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy': "default-src 'none'; sandbox", 'Referrer-Policy': 'no-referrer',
       'Cross-Origin-Resource-Policy': 'same-origin', 'Content-Disposition': 'inline', 'X-Robots-Tag': 'noindex',
     });
@@ -512,12 +515,12 @@ export function createApp({
       if (action === 'leave' && m === 'POST') return sendJson(res, 200, await leave(game, me));
       if (action === 'start' && m === 'POST') return sendJson(res, 200, await start(game, me, req));
       if (action === 'end' && m === 'POST') return sendJson(res, 200, await end(game, me));
+      if (action === 'photos' && parts.length === 5 && m === 'GET') return servePhoto(game, me, res, parts[4]);
       if (action === 'entries' && parts.length === 4 && m === 'POST') return sendJson(res, 201, await addEntry(game, me, req, url));
       if (action === 'entries' && parts.length === 5 && m === 'DELETE') return sendJson(res, 200, await removeEntry(game, me, parts[4]));
       throw new HttpError(404, 'not-found');
     }
     if (m !== 'GET' && m !== 'HEAD') throw new HttpError(405, 'method');
-    if (parts[0] === 'photos' && parts.length === 3) return servePhoto(res, parts[1], parts[2]);
     return serveStatic(res, url.pathname);
   }
 
