@@ -90,23 +90,50 @@ function openGame(code) {
   connect();
 }
 
+// Live updates: a streamed fetch rather than EventSource, because EventSource cannot send an
+// Authorization header and the token must never ride in a URL.
 function connect() {
   const code = app.code;
-  const stream = new EventSource(`/api/games/${code}/events?token=${encodeURIComponent(session().token)}`);
+  const control = new AbortController();
+  const stream = { closed: false, close() { this.closed = true; control.abort(); } };
   app.stream = stream;
-  stream.onmessage = (ev) => { if (app.code === code) onState(JSON.parse(ev.data)); };
-  // EventSource retries by itself; this only finds out whether retrying is pointless.
-  stream.onerror = async () => {
-    if (app.code !== code) return;
-    try { onState(await gameApi('GET')); }
-    catch (e) {
-      if (e.status === 401 || e.status === 404) {
-        forgetSession(code);
-        toast(e.status === 404 ? 'המשחק הזה כבר לא קיים' : e.message, 'bad');
-        go('#/');
-      }
+  const alive = () => !stream.closed && app.code === code;
+
+  (async () => {
+    let wait = 1000;
+    while (alive()) {
+      try {
+        const res = await fetch(`/api/games/${code}/events`, { headers: { Authorization: `Bearer ${session().token}`, Accept: 'text/event-stream' }, signal: control.signal, cache: 'no-store' });
+        if (res.status === 401 || res.status === 404) {
+          if (!alive()) return;
+          forgetSession(code);
+          toast(res.status === 404 ? 'המשחק הזה כבר לא קיים' : 'צריך להצטרף למשחק מחדש', 'bad');
+          go('#/');
+          return;
+        }
+        if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+        wait = 1000;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          if (buf.length > 4_000_000) throw new Error('stream too large');
+          let cut;
+          while ((cut = buf.indexOf('\n\n')) >= 0) {
+            const line = buf.slice(0, cut).split('\n').find((l) => l.startsWith('data: '));
+            buf = buf.slice(cut + 2);
+            if (line && alive()) onState(JSON.parse(line.slice(6)));
+          }
+        }
+      } catch { /* offline, server restart, bad chunk: fall through and reconnect */ }
+      if (!alive()) return;
+      await new Promise((r) => setTimeout(r, wait));
+      wait = Math.min(wait * 2, 15000);
     }
-  };
+  })();
 }
 
 function onState(game) {
@@ -144,7 +171,7 @@ function announce(before, game) {
 function renderHome(joinCode = '') {
   clear(main);
   const nameInput = h('input', { class: 'input', id: 'name', maxLength: 20, placeholder: 'השם שלך', value: app.name, autocomplete: 'nickname', enterKeyHint: 'done' });
-  const codeInput = h('input', { class: 'input code-input', id: 'code', maxLength: 5, placeholder: 'קוד משחק', value: joinCode, autocapitalize: 'characters', autocomplete: 'off', spellcheck: false, dir: 'ltr', enterKeyHint: 'go' });
+  const codeInput = h('input', { class: 'input code-input', id: 'code', maxLength: 6, placeholder: 'קוד משחק', value: joinCode, autocapitalize: 'characters', autocomplete: 'off', spellcheck: false, dir: 'ltr', enterKeyHint: 'go' });
   codeInput.addEventListener('input', () => { codeInput.value = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
 
   const needName = () => {
@@ -611,7 +638,6 @@ addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => {
   // Phones freeze background tabs; on return make sure the stream is alive and the state is fresh.
   if (document.visibilityState !== 'visible' || !app.code) return;
-  if (!app.stream || app.stream.readyState === EventSource.CLOSED) { disconnect(); connect(); }
-  else gameApi('GET').then(onState).catch(() => {});
+  disconnect(); connect(); // a fresh stream starts with the full current state
 });
 route();

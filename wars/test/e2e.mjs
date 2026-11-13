@@ -24,9 +24,12 @@ const base = `http://127.0.0.1:${app.server.address().port}`;
 const browser = await chromium.launch();
 const errors = [];
 
+const urls = []; // every request any phone makes
+
 async function phone(name) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, locale: 'he-IL', hasTouch: true, isMobile: true });
   const page = await ctx.newPage();
+  page.on('request', (r) => urls.push(r.url()));
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: console: ${m.text()}`); });
   return page;
@@ -79,7 +82,7 @@ try {
   await boss.getByRole('button', { name: 'להקים משחק', exact: true }).click();
   await boss.locator('.code').waitFor();
   const code = (await boss.locator('.code').textContent()).trim();
-  assert.match(code, /^[A-Z2-9]{5}$/);
+  assert.match(code, /^[A-Z2-9]{6}$/);
 
   // --- two friends join: one by code, one by invite link ---
   const dana = await phone('dana');
@@ -172,6 +175,33 @@ try {
   await boss.getByRole('button', { name: 'להכניס את מאחר' }).click();
   await late.locator('.action').first().waitFor();
 
+  // --- a hostile player: markup in the name and in a caption must stay plain text ---
+  const evil = await phone('evil');
+  const payload = '<img src=x onerror="window.__xss=1">';
+  await evil.goto(`${base}/#/join/${code}`);
+  await evil.getByPlaceholder('השם שלך').fill(payload.slice(0, 20));
+  await evil.getByRole('button', { name: 'להצטרף למשחק' }).click();
+  await evil.getByText('ברשימת ההמתנה').waitFor();
+  await boss.getByText('רשימת המתנה (1)').waitFor();
+  await boss.locator('.waiting-card .row .btn.primary').click();
+  await evil.locator('.action').first().waitFor();
+  await addPoint(evil, 'להיות במסיבה', photos.food, '<script>window.__xss=1</script><img src=x onerror=window.__xss=1>');
+  await boss.getByRole('tab', { name: /גלריה \(7\)/ }).waitFor();
+  await boss.getByRole('tab', { name: 'טבלה' }).click();
+  await boss.getByText('<img src=x onerror=', { exact: false }).first().waitFor(); // shown literally
+  await boss.getByRole('tab', { name: /גלריה/ }).click();
+  await boss.locator('.tile').first().click();
+  await boss.getByText('<script>window.__xss=1</script>', { exact: false }).waitFor();
+  for (const p of [boss, dana, yossi, late, evil]) {
+    assert.equal(await p.evaluate(() => window.__xss), undefined);
+    assert.equal(await p.locator('main img[src="x"], #sheet img[src="x"], main script').count(), 0);
+  }
+  // The hostile photo is the newest one; the boss removes it and then the player.
+  await boss.getByRole('button', { name: /למחוק/ }).click();
+  await boss.getByRole('button', { name: 'למחוק', exact: true }).click();
+  await boss.getByRole('tab', { name: 'גלריה (6)' }).waitFor();
+  await boss.getByRole('tab', { name: 'משחק' }).click();
+
   // --- the boss deletes a suspicious photo ---
   await boss.getByRole('tab', { name: /גלריה/ }).click();
   await boss.locator('.tile').first().click();
@@ -205,6 +235,10 @@ try {
   await dana.locator('.winner').waitFor();
 
   for (const p of [boss, dana, yossi, late]) assert.equal(await p.getByText('null', { exact: true }).count(), 0);
+  // No secret ever travels in a URL (logs, history, Referer).
+  const tokens = await Promise.all([boss, dana, yossi, late].map((p) => p.evaluate(() => Object.values(JSON.parse(localStorage.getItem('fw.sessions'))).map((x) => x.token))));
+  for (const token of tokens.flat()) assert.equal(urls.some((u) => u.includes(token)), false);
+  assert.equal(urls.some((u) => /[?&]token=/.test(u)), false);
   assert.deepEqual(errors, []);
   console.log(`e2e ok - game ${code}, screenshots in ${SHOTS}`);
 } catch (e) {

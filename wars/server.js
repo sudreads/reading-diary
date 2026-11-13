@@ -12,15 +12,21 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(HERE, 'public');
 
-const MAX_PHOTO_BYTES = 4 * 1024 * 1024;
+// Every limit below exists so that one stranger cannot fill the disk, the memory or a game.
+const MAX_PHOTO_BYTES = 2 * 1024 * 1024; // the app sends ~200 KB
 const MAX_JSON_BYTES = 16 * 1024;
-const MAX_PLAYERS = 60;
-const MAX_ENTRIES = 5000;
+const MAX_PLAYERS = 60; // members + waiting, per game
+const MAX_WAITING = 25;
+const MAX_PLAYER_RECORDS = 300; // including everyone who left or was removed
+const MAX_ENTRIES = 3000; // per game
+const MAX_ENTRIES_PER_PLAYER = 400;
+const MAX_STREAMS_PER_PLAYER = 4;
+const MAX_STREAMS = 2000;
 const MAX_CATEGORIES = 12;
 const ENTRY_COOLDOWN_MS = 3000;
 const GAME_TTL_MS = 30 * 24 * 3600 * 1000;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
-const CODE_LENGTH = 5;
+const CODE_LENGTH = 6; // 32^6 = a billion codes; guesses are rate-limited as well
 
 export const DEFAULT_CATEGORIES = [
   { id: 'beer', emoji: '🍺', label: 'לשתות בירה' },
@@ -48,7 +54,12 @@ const newId = (bytes = 9) => crypto.randomBytes(bytes).toString('base64url');
 // Trim, collapse whitespace, drop control and bidi-override characters, cap the length.
 export function cleanText(value, max) {
   if (typeof value !== 'string') return '';
-  return value.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+  const text = value.normalize('NFC')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ') // control + bidi overrides
+    .replace(/[\u200b\u200c\u200e\u200f\u2060\ufeff\u00ad]/g, '') // invisible (the emoji joiner U+200D stays)
+    .replace(/\s+/g, ' ').trim();
+  // Cut by whole characters so an emoji is never sliced in half.
+  return [...text].slice(0, max).join('').trim();
 }
 
 // Which image format the bytes really are; the Content-Type header is not trusted.
@@ -74,7 +85,10 @@ function parseCategories(input) {
   });
 }
 
-export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20, joinsPerMinute = 30 }) {
+export function createApp({
+  dataDir, now = () => Date.now(), createsPerHour = 20, joinsPerMinute = 30, joinsPerGameHour = 8, requestsPerMinute = 600, codeMisses = 15,
+  trustProxy = 0, maxGames = 3000, maxTotalBytes = 5 * 1024 ** 3,
+}) {
   const gamesDir = path.join(dataDir, 'games');
   const photosDir = path.join(dataDir, 'photos');
   fs.mkdirSync(gamesDir, { recursive: true });
@@ -84,6 +98,9 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
   const streams = new Map(); // code -> Set<{res, playerId}>
   const saving = new Map(); // code -> Promise chain
   const rate = new Map(); // key -> { count, resetAt }
+  const uploading = new Set(); // player ids with an upload in flight
+  let totalBytes = 0; // photos on disk, all games
+  let streamCount = 0;
 
   for (const file of fs.readdirSync(gamesDir)) {
     if (!file.endsWith('.json')) continue;
@@ -92,6 +109,7 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
       if (game && game.code) games.set(game.code, game);
     } catch { /* a half-written file from a crash: skip it, the rest still load */ }
   }
+  for (const game of games.values()) for (const e of game.entries) totalBytes += e.size || 0;
 
   function save(game) {
     const file = path.join(gamesDir, `${game.code}.json`);
@@ -176,6 +194,7 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
 
   function removeGame(game) {
     games.delete(game.code);
+    for (const e of game.entries) totalBytes -= e.size || 0;
     for (const client of streams.get(game.code) || []) client.res.end();
     streams.delete(game.code);
     fsp.rm(path.join(gamesDir, `${game.code}.json`), { force: true }).catch(() => {});
@@ -189,10 +208,12 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
     return game;
   }
 
-  function auth(game, req, url) {
-    const header = req.headers.authorization || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7) : url.searchParams.get('token') || '';
-    if (!token) throw new HttpError(401, 'no-token', 'צריך להצטרף למשחק קודם');
+  // The token travels in the Authorization header only: never in a URL, so it never lands in
+  // access logs, browser history or a Referer.
+  function auth(game, req) {
+    const header = String(req.headers.authorization || '');
+    const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    if (!token || token.length > 200) throw new HttpError(401, 'no-token', 'צריך להצטרף למשחק קודם');
     const hash = sha(token);
     const me = game.players.find((p) => p.tokenHash === hash);
     if (!me) throw new HttpError(401, 'bad-token', 'צריך להצטרף למשחק קודם');
@@ -201,6 +222,16 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
 
   const requireHost = (game, me) => { if (me.id !== game.hostId) throw new HttpError(403, 'host-only', 'רק הבוס יכול לעשות את זה'); };
   const requireIn = (me) => { if (me.status !== 'in') throw new HttpError(403, 'not-in', 'הבוס עוד לא הכניס אותך למשחק'); };
+
+  // Two players never show the same name: nobody can pose as the boss or as a friend.
+  function uniqueName(game, name) {
+    const taken = new Set(game.players.filter((p) => p.status !== 'out').map((p) => p.name.toLowerCase()));
+    if (!taken.has(name.toLowerCase())) return name;
+    for (let n = 2; ; n++) {
+      const candidate = `${[...name].slice(0, 16).join('').trim()} ${n}`;
+      if (!taken.has(candidate.toLowerCase())) return candidate;
+    }
+  }
 
   function newPlayer(name, status) {
     const token = newId(24);
@@ -234,12 +265,22 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
   }
 
   const sameHost = (origin, host) => { try { return new URL(origin).host === host; } catch { return false; } };
-  const ipOf = (req) => (String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress || 'unknown';
+  // X-Forwarded-For is whatever the sender typed unless a proxy we run overwrote it. Only the
+  // entry added by our own proxy (counted from the right) is believed, and only when configured.
+  function ipOf(req) {
+    if (trustProxy > 0) {
+      const hops = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+      const ip = hops[hops.length - trustProxy];
+      if (ip) return ip.slice(0, 64);
+    }
+    return req.socket.remoteAddress || 'unknown';
+  }
 
   // ----- routes -----
 
   async function createGame(req) {
     limit(`create:${ipOf(req)}`, createsPerHour, 3600_000);
+    if (games.size >= maxGames) throw new HttpError(503, 'busy', 'יש יותר מדי משחקים כרגע, נסו מאוחר יותר');
     const body = await readJson(req);
     const playerName = cleanText(body.playerName, 20);
     if (!playerName) throw bad('no-name', 'איך קוראים לך?');
@@ -258,12 +299,15 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
 
   async function joinGame(game, req) {
     limit(`join:${ipOf(req)}`, joinsPerMinute, 60_000);
+    limit(`join:${game.code}:${ipOf(req)}`, joinsPerGameHour, 3600_000); // one phone cannot flood one waiting list
     const body = await readJson(req);
     const playerName = cleanText(body.playerName, 20);
     if (!playerName) throw bad('no-name', 'איך קוראים לך?');
     if (game.status === 'ended') throw new HttpError(409, 'ended', 'המשחק הזה כבר נגמר');
     if (game.players.filter((p) => p.status !== 'out').length >= MAX_PLAYERS) throw new HttpError(409, 'full', 'המשחק מלא');
-    const { player, token } = newPlayer(playerName, 'waiting');
+    if (game.players.filter((p) => p.status === 'waiting').length >= MAX_WAITING) throw new HttpError(409, 'full', 'רשימת ההמתנה מלאה, בקשו מהבוס להכניס אנשים');
+    if (game.players.length >= MAX_PLAYER_RECORDS) throw new HttpError(409, 'full', 'המשחק מלא');
+    const { player, token } = newPlayer(uniqueName(game, playerName), 'waiting');
     game.players.push(player);
     await changed(game);
     return { code: game.code, token, playerId: player.id };
@@ -286,7 +330,7 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
     if (!target || target.status === 'out') throw new HttpError(404, 'no-player', 'השחקן לא נמצא');
     if (target.id === game.hostId) throw bad('host-stays', 'הבוס לא יכול להעיף את עצמו');
     target.status = 'out';
-    await changed(game);
+    await changed(game); // their stream gets one last update saying "out"; later ones carry nothing private
     return { ok: true };
   }
 
@@ -325,26 +369,35 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
     const cat = url.searchParams.get('cat');
     if (!game.categories.some((c) => c.id === cat)) throw bad('bad-category', 'קטגוריה לא מוכרת');
     if (game.entries.length >= MAX_ENTRIES) throw new HttpError(409, 'full', 'הגלריה מלאה');
+    if (game.entries.filter((e) => e.playerId === me.id).length >= MAX_ENTRIES_PER_PLAYER) throw new HttpError(409, 'full', 'הגעת למקסימום התמונות במשחק הזה');
+    if (totalBytes >= maxTotalBytes) throw new HttpError(507, 'disk-full', 'נגמר המקום בשרת, דברו עם מי שמפעיל אותו');
     const t = now();
     if (t - (me.lastEntryAt || 0) < ENTRY_COOLDOWN_MS) throw new HttpError(429, 'slow-down', 'רגע, לאט לאט. נסו שוב עוד כמה שניות');
-    // The photo is the proof: no image, no point.
-    const buf = await readBody(req, MAX_PHOTO_BYTES);
-    const ext = sniffImage(buf);
-    if (!ext) throw bad('no-photo', 'בלי תמונה זה לא נחשב');
-    const note = cleanText(url.searchParams.get('note') || '', 80);
-    const dir = path.join(photosDir, game.code);
-    await fsp.mkdir(dir, { recursive: true });
-    const file = `${newId(16)}.${ext}`;
-    await fsp.writeFile(path.join(dir, file), buf);
-    if (game.status !== 'active') { // ended while the upload was in flight
-      await fsp.rm(path.join(dir, file), { force: true });
-      throw new HttpError(409, 'not-active', 'המשחק נגמר');
-    }
-    me.lastEntryAt = t;
-    const entry = { id: newId(8), playerId: me.id, cat, file, ts: t, note };
-    game.entries.push(entry);
-    await changed(game);
-    return { ok: true, id: entry.id };
+    // One upload at a time per player: parallel requests cannot slip past the cooldown.
+    if (uploading.has(me.id)) throw new HttpError(429, 'slow-down', 'תמונה אחת בכל פעם');
+    uploading.add(me.id);
+    try {
+      // The photo is the proof: no image, no point.
+      const buf = await readBody(req, MAX_PHOTO_BYTES);
+      const ext = sniffImage(buf);
+      if (!ext) throw bad('no-photo', 'בלי תמונה זה לא נחשב');
+      const note = cleanText(url.searchParams.get('note') || '', 80);
+      const dir = path.join(photosDir, game.code);
+      await fsp.mkdir(dir, { recursive: true });
+      const file = `${newId(16)}.${ext}`;
+      await fsp.writeFile(path.join(dir, file), buf, { mode: 0o600 });
+      // The world may have moved while the upload was in flight.
+      if (game.status !== 'active' || me.status !== 'in' || !games.has(game.code)) {
+        await fsp.rm(path.join(dir, file), { force: true });
+        throw new HttpError(409, 'not-active', 'המשחק נגמר');
+      }
+      me.lastEntryAt = t;
+      totalBytes += buf.length;
+      const entry = { id: newId(8), playerId: me.id, cat, file, ts: t, note, size: buf.length };
+      game.entries.push(entry);
+      await changed(game);
+      return { ok: true, id: entry.id };
+    } finally { uploading.delete(me.id); }
   }
 
   async function removeEntry(game, me, entryId) {
@@ -356,22 +409,33 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
     if (entry.playerId !== me.id && !isHost) throw new HttpError(403, 'not-yours', 'אפשר למחוק רק תמונות שלך');
     if (game.status === 'ended' && !isHost) throw new HttpError(409, 'ended', 'המשחק נגמר');
     game.entries.splice(i, 1);
+    totalBytes -= entry.size || 0;
     await fsp.rm(path.join(photosDir, game.code, entry.file), { force: true });
     await changed(game);
     return { ok: true };
   }
 
   function events(game, me, req, res) {
+    if (streamCount >= MAX_STREAMS) throw new HttpError(503, 'busy', 'השרת עמוס, נסו שוב עוד רגע');
+    // A player with many tabs keeps the newest ones; the oldest stream is closed.
+    const mine = [...(streams.get(game.code) || [])].filter((c) => c.playerId === me.id);
+    for (const old of mine.slice(0, Math.max(0, mine.length - MAX_STREAMS_PER_PLAYER + 1))) old.res.end();
     res.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform',
+      'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store, no-transform', 'X-Content-Type-Options': 'nosniff',
       Connection: 'keep-alive', 'X-Accel-Buffering': 'no',
     });
     res.write(`retry: 3000\ndata: ${JSON.stringify(view(game, me))}\n\n`);
     const client = { res, playerId: me.id };
     if (!streams.has(game.code)) streams.set(game.code, new Set());
     streams.get(game.code).add(client);
+    streamCount++;
     const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
-    req.on('close', () => { clearInterval(ping); streams.get(game.code)?.delete(client); });
+    res.on('close', () => {
+      clearInterval(ping);
+      streamCount--;
+      const set = streams.get(game.code);
+      if (set) { set.delete(client); if (!set.size) streams.delete(game.code); }
+    });
   }
 
   async function servePhoto(res, code, file) {
@@ -382,22 +446,29 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file)], 'Content-Length': stat.size,
       'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'none'", 'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "default-src 'none'; sandbox", 'Referrer-Policy': 'no-referrer',
+      'Cross-Origin-Resource-Policy': 'same-origin', 'Content-Disposition': 'inline', 'X-Robots-Tag': 'noindex',
     });
-    fs.createReadStream(full).pipe(res);
+    const stream = fs.createReadStream(full);
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
   }
 
   async function serveStatic(res, pathname) {
-    let rel = pathname === '/' ? 'index.html' : pathname.slice(1);
-    let full = path.join(PUBLIC_DIR, rel);
+    const rel = pathname === '/' ? 'index.html' : pathname.slice(1);
+    // Only plain file names that ship with the app: no dot-files, no folders, nothing encoded.
+    if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]+$/i.test(rel) || rel.includes('..')) throw new HttpError(404, 'not-found');
+    const full = path.join(PUBLIC_DIR, rel);
     if (!full.startsWith(PUBLIC_DIR + path.sep)) throw new HttpError(404, 'not-found');
     let body;
     try { body = await fsp.readFile(full); } catch { throw new HttpError(404, 'not-found'); }
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'Content-Length': body.length,
       'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-      'X-Frame-Options': 'DENY',
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Resource-Policy': 'same-origin',
+      'Permissions-Policy': 'geolocation=(), microphone=(), payment=(), usb=()',
+      'Strict-Transport-Security': 'max-age=31536000; includeSubDomains', 'X-Robots-Tag': 'noindex',
+      'Content-Security-Policy': "default-src 'none'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     });
     res.end(body);
   }
@@ -409,22 +480,31 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
   }
 
   async function route(req, res) {
-    const url = new URL(req.url, 'http://x');
+    let url;
+    try { url = new URL(req.url, 'http://x'); } catch { throw bad('bad-url', 'בקשה לא תקינה'); }
     const parts = url.pathname.split('/').filter(Boolean);
     const m = req.method;
+    const ip = ipOf(req);
+    limit(`all:${ip}`, requestsPerMinute, 60_000);
 
     if (parts[0] === 'api') {
       // Same-origin only: a page on another site cannot drive the API with a player's browser.
       const origin = req.headers.origin;
       if (origin && m !== 'GET' && !sameHost(origin, req.headers.host)) throw new HttpError(403, 'cross-origin');
-      if (parts[1] === 'health' && m === 'GET') return sendJson(res, 200, { ok: true, games: games.size });
+      if (m !== 'GET' && req.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'cross-origin');
+      if (parts[1] === 'health' && m === 'GET') return sendJson(res, 200, { ok: true });
       if (parts[1] === 'defaults' && m === 'GET') return sendJson(res, 200, { categories: DEFAULT_CATEGORIES });
       if (parts[1] !== 'games') throw new HttpError(404, 'not-found');
       if (parts.length === 2 && m === 'POST') return sendJson(res, 201, await createGame(req));
-      const game = getGame(parts[2]);
+      // Guessing codes: after a handful of misses this address gets no more answers for a while.
+      const misses = rate.get(`miss:${ip}`);
+      if (misses && misses.resetAt > now() && misses.count >= codeMisses) throw new HttpError(429, 'slow-down', 'יותר מדי ניסיונות, נסו שוב מאוחר יותר');
+      let game;
+      try { game = getGame(parts[2]); }
+      catch (e) { try { limit(`miss:${ip}`, Infinity, 600_000); } catch { /* counting only */ } throw e; }
       const action = parts[3];
       if (action === 'join' && m === 'POST') return sendJson(res, 201, await joinGame(game, req));
-      const me = auth(game, req, url);
+      const me = auth(game, req);
       if (!action && m === 'GET') return sendJson(res, 200, view(game, me));
       if (action === 'events' && m === 'GET') return events(game, me, req, res);
       if (action === 'approve' && m === 'POST') return sendJson(res, 200, await approve(game, me, req));
@@ -442,24 +522,44 @@ export function createApp({ dataDir, now = () => Date.now(), createsPerHour = 20
   }
 
   const server = http.createServer((req, res) => {
+    // A socket that dies mid-request must never take the process down with it.
+    req.on('error', () => {});
+    res.on('error', () => {});
     route(req, res).catch((e) => {
       const status = e instanceof HttpError ? e.status : 500;
       if (status === 500) console.error(e);
       if (res.headersSent) { res.end(); return; }
+      // The rest of a refused upload is not worth reading: close the connection after answering.
+      if (!req.complete) res.setHeader('Connection', 'close');
       sendJson(res, status, { error: e.code || 'server', message: status === 500 ? 'משהו השתבש' : e.message });
     });
   });
   server.requestTimeout = 60_000;
+  server.headersTimeout = 15_000;
+  server.keepAliveTimeout = 10_000;
+  server.maxHeadersCount = 60;
+  server.on('clientError', (err, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); else socket.destroy(); });
   const timer = setInterval(sweep, 15_000);
   timer.unref();
   server.on('close', () => clearInterval(timer));
 
-  return { server, games, sweep, flush: () => Promise.all([...saving.values()]) };
+  return { server, games, sweep, flush: () => Promise.all([...saving.values()]), stats: () => ({ games: games.size, totalBytes, streams: streamCount }) };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 8787);
   const dataDir = process.env.DATA_DIR || path.join(HERE, 'data');
-  const { server } = createApp({ dataDir });
-  server.listen(port, () => console.log(`Food Wars on http://localhost:${port}  (data: ${dataDir})`));
+  const trustProxy = Math.max(0, Math.floor(Number(process.env.TRUST_PROXY || 0)) || 0);
+  const maxTotalBytes = (Number(process.env.MAX_STORAGE_MB) || 5120) * 1024 * 1024;
+  const { server, flush } = createApp({ dataDir, trustProxy, maxTotalBytes });
+  server.listen(port, () => {
+    console.log(`Food Wars on http://localhost:${port}  (data: ${dataDir})`);
+    if (!trustProxy) console.log('TRUST_PROXY is not set: behind a reverse proxy every visitor counts as one address for rate limits.');
+  });
+  // One bad request must not end everyone's game: log it and keep serving.
+  process.on('uncaughtException', (e) => console.error('uncaught', e));
+  process.on('unhandledRejection', (e) => console.error('unhandled', e));
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.on(signal, () => { server.closeAllConnections(); server.close(() => flush().finally(() => process.exit(0))); });
+  }
 }

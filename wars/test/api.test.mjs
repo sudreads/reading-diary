@@ -16,7 +16,7 @@ let dataDir, app, base, clock;
 before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fw-test-'));
   clock = Date.now();
-  app = createApp({ dataDir, now: () => clock, createsPerHour: 1000, joinsPerMinute: 1000 });
+  app = createApp({ dataDir, now: () => clock, createsPerHour: 1000, joinsPerMinute: 1000, joinsPerGameHour: 1000, codeMisses: 1000, requestsPerMinute: 100000 });
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${app.server.address().port}`;
 });
@@ -67,9 +67,9 @@ test('helpers: sniffImage and cleanText', () => {
   assert.equal(cleanText('x'.repeat(50), 20).length, 20);
 });
 
-test('create a game: host is in, default categories, 5-letter code', async () => {
+test('create a game: host is in, default categories, 6-letter code', async () => {
   const g = await newGame();
-  assert.match(g.code, /^[A-HJ-NP-Z2-9]{5}$/);
+  assert.match(g.code, /^[A-HJ-NP-Z2-9]{6}$/);
   const s = await state(g.code, g.token);
   assert.equal(s.status, 'lobby');
   assert.equal(s.name, 'ערב שישי');
@@ -126,7 +126,7 @@ test('auth: no token, wrong token, token from another game', async () => {
   assert.equal((await call('GET', `/api/games/${a.code}`)).status, 401);
   assert.equal((await call('GET', `/api/games/${a.code}`, { token: 'nope' })).status, 401);
   assert.equal((await call('GET', `/api/games/${a.code}`, { token: b.token })).status, 401);
-  assert.equal((await call('GET', '/api/games/ZZZZZ', { token: a.token })).status, 404);
+  assert.equal((await call('GET', '/api/games/ZZZZZZ', { token: a.token })).status, 404);
 });
 
 test('points need a real photo, an active game and a member', async () => {
@@ -227,7 +227,9 @@ test('kick and leave: out of the game, photos stay, the boss cannot go', async (
 
 test('live updates arrive over the event stream', async () => {
   const g = await newGame();
-  const res = await fetch(`${base}/api/games/${g.code}/events?token=${g.token}`);
+  // The token is accepted in the header only: a URL would leak it into logs and history.
+  assert.equal((await fetch(`${base}/api/games/${g.code}/events?token=${g.token}`)).status, 401);
+  const res = await fetch(`${base}/api/games/${g.code}/events`, { headers: { Authorization: `Bearer ${g.token}` } });
   assert.equal(res.status, 200);
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -285,7 +287,18 @@ test('rate limits: creating games and guessing codes', async () => {
 test('static files, path traversal, cross-origin posts', async () => {
   const home = await call('GET', '/');
   assert.equal(home.status, 200);
-  assert.match(home.headers.get('content-security-policy'), /default-src 'self'/);
+  const csp = home.headers.get('content-security-policy');
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /script-src 'self';/); // no inline scripts, no eval, no other origins
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.equal(csp.includes('unsafe'), false);
+  assert.equal(home.headers.get('x-frame-options'), 'DENY');
+  assert.equal(home.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal((await call('GET', '/.env')).status, 404);
+  assert.equal((await call('GET', '/%2e%2e/server.js')).status, 404);
+  assert.equal((await call('GET', '//etc/passwd')).status, 404);
+  assert.equal((await call('GET', '/app.js%00.png')).status, 404);
+  assert.equal((await call('PUT', '/app.js', { raw: JPEG })).status, 405);
   assert.equal((await call('GET', '/app.js')).status, 200);
   assert.equal((await call('GET', '/..%2fserver.js')).status, 404);
   assert.equal((await call('GET', '/photos/AAAAA/..%2f..%2fgames%2fx.json')).status, 404);
@@ -309,4 +322,205 @@ test('scoring: totals, shared places, category winners', () => {
   assert.deepEqual(ranking(game, 'beer').map((r) => [r.player.id, r.place]), [['a', 1], ['b', 2], ['c', 3]]);
   const winners = categoryWinners(game);
   assert.deepEqual(winners.map((w) => [w.cat.id, w.count, w.winners.map((p) => p.id)]), [['beer', 2, ['a']], ['food', 2, ['b']], ['view', 0, []]]);
+});
+
+// ----- attacks -----
+
+async function miniServer(options) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fw-sec-'));
+  const mini = createApp({ dataDir: dir, ...options });
+  await new Promise((r) => mini.server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${mini.server.address().port}`;
+  const req = async (method, p, { json, raw, token, headers = {} } = {}) => {
+    const h = { ...headers };
+    if (token) h.Authorization = `Bearer ${token}`;
+    if (json) h['Content-Type'] = 'application/json';
+    const res = await fetch(url + p, { method, headers: h, body: json ? JSON.stringify(json) : raw });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  };
+  const stop = async () => {
+    mini.server.closeAllConnections();
+    await new Promise((r) => mini.server.close(r));
+    await mini.flush();
+    fs.rmSync(dir, { recursive: true, force: true });
+  };
+  return { mini, url, req, stop, dir };
+}
+
+test('attack: a made-up X-Forwarded-For does not reset the rate limit', async () => {
+  const { req, stop } = await miniServer({ createsPerHour: 2 });
+  const statuses = [];
+  for (let i = 0; i < 4; i++) statuses.push((await req('POST', '/api/games', { json: { playerName: 'a' }, headers: { 'X-Forwarded-For': `10.0.0.${i}` } })).status);
+  assert.deepEqual(statuses, [201, 201, 429, 429]);
+  await stop();
+});
+
+test('behind a trusted proxy the real client address is the one the proxy appended', async () => {
+  const { req, stop } = await miniServer({ createsPerHour: 1, trustProxy: 1 });
+  const from = (xff) => req('POST', '/api/games', { json: { playerName: 'a' }, headers: { 'X-Forwarded-For': xff } }).then((r) => r.status);
+  assert.equal(await from('1.1.1.1'), 201);
+  assert.equal(await from('2.2.2.2'), 201); // a different visitor
+  assert.equal(await from('9.9.9.9, 1.1.1.1'), 429); // the left part is typed by the client and ignored
+  await stop();
+});
+
+test('attack: guessing game codes locks the guesser out', async () => {
+  const { req, stop } = await miniServer({ codeMisses: 5 });
+  const real = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
+  const statuses = [];
+  for (let i = 0; i < 7; i++) statuses.push((await req('POST', `/api/games/AAAA${i + 2}B/join`, { json: { playerName: 'x' } })).status);
+  assert.deepEqual(statuses, [404, 404, 404, 404, 404, 429, 429]);
+  // Locked out even for a code that exists: no oracle left.
+  assert.equal((await req('POST', `/api/games/${real.code}/join`, { json: { playerName: 'x' } })).status, 429);
+  await stop();
+});
+
+test('attack: flooding one waiting list from one phone', async () => {
+  const { req, stop } = await miniServer({ joinsPerGameHour: 3 });
+  const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
+  const statuses = [];
+  for (let i = 0; i < 5; i++) statuses.push((await req('POST', `/api/games/${g.code}/join`, { json: { playerName: `טרול ${i}` } })).status);
+  assert.deepEqual(statuses, [201, 201, 201, 429, 429]);
+  await stop();
+});
+
+test('the waiting list has a ceiling', async () => {
+  const g = await newGame();
+  const statuses = [];
+  for (let i = 0; i < 27; i++) statuses.push((await call('POST', `/api/games/${g.code}/join`, { json: { playerName: `p${i}` } })).status);
+  assert.equal(statuses.filter((x) => x === 201).length, 25);
+  assert.deepEqual(statuses.slice(25), [409, 409]);
+});
+
+test('attack: posing as the boss - names are unique inside a game', async () => {
+  const g = await newGame();
+  const fake = await joinAs(g.code, 'בוס');
+  const fake2 = await joinAs(g.code, '  בוס​ ');
+  const host = await state(g.code, g.token);
+  assert.deepEqual(host.players.map((p) => p.name), ['בוס', 'בוס 2', 'בוס 3']);
+  assert.equal((await state(g.code, fake.token)).me.name, 'בוס 2');
+  assert.equal((await state(g.code, fake2.token)).me.name, 'בוס 3');
+});
+
+test('attack: invisible and direction-flipping characters in names', async () => {
+  assert.equal(cleanText('​‎﻿', 20), '');
+  assert.equal((await call('POST', '/api/games', { json: { playerName: '​⁠­' } })).status, 400);
+  assert.equal(cleanText('דני‮<script>', 20), 'דני <script>'); // stored as text, shown as text
+  assert.equal(cleanText('👨‍👩‍👧‍👦'.repeat(30), 3), '👨‍👩'); // cut by character, never mid-surrogate
+});
+
+test('attack: parallel uploads cannot beat the cooldown', async () => {
+  const g = await newGame();
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  tick();
+  const results = await Promise.all(Array.from({ length: 8 }, () => call('POST', `/api/games/${g.code}/entries?cat=beer`, { token: g.token, raw: JPEG })));
+  assert.equal(results.filter((r) => r.status === 201).length, 1);
+  assert.equal(results.filter((r) => r.status === 429).length, 7);
+  assert.equal((await state(g.code, g.token)).entries.length, 1);
+});
+
+test('attack: filling the disk - the storage quota stops uploads', async () => {
+  const { req, stop, mini } = await miniServer({ maxTotalBytes: 150 });
+  let t = Date.now();
+  const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
+  await req('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  const up = () => req('POST', `/api/games/${g.code}/entries?cat=beer`, { token: g.token, raw: JPEG, headers: { 'Content-Type': 'image/jpeg' } });
+  const game = mini.games.get(g.code);
+  const skipCooldown = () => { for (const p of game.players) p.lastEntryAt = 0; };
+  assert.equal((await up()).status, 201); skipCooldown();
+  assert.equal((await up()).status, 201); skipCooldown();
+  assert.equal(mini.stats().totalBytes, 2 * JPEG.length);
+  assert.equal((await up()).status, 201); skipCooldown(); // 136 bytes so far, under 150
+  assert.equal((await up()).status, 507);
+  // Deleting frees the space again.
+  const id = (await req('GET', `/api/games/${g.code}`, { token: g.token })).body.entries[0].id;
+  assert.equal((await req('DELETE', `/api/games/${g.code}/entries/${id}`, { token: g.token })).status, 200);
+  assert.equal((await up()).status, 201);
+  await stop();
+});
+
+test('attack: too many games - the server stops accepting new ones', async () => {
+  const { req, stop } = await miniServer({ maxGames: 2 });
+  const statuses = [];
+  for (let i = 0; i < 3; i++) statuses.push((await req('POST', '/api/games', { json: { playerName: 'a' } })).status);
+  assert.deepEqual(statuses, [201, 201, 503]);
+  await stop();
+});
+
+test('attack: request flood from one address', async () => {
+  const { url, stop } = await miniServer({ requestsPerMinute: 10 });
+  const statuses = [];
+  for (let i = 0; i < 12; i++) statuses.push((await fetch(`${url}/api/health`)).status);
+  assert.deepEqual(statuses.slice(9), [200, 429, 429]);
+  await stop();
+});
+
+test('attack: opening endless live streams - old ones are closed', async () => {
+  const { url, mini, stop } = await miniServer({});
+  const g = await (await fetch(`${url}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playerName: 'a' }) })).json();
+  const open = [];
+  for (let i = 0; i < 7; i++) {
+    const res = await fetch(`${url}/api/games/${g.code}/events`, { headers: { Authorization: `Bearer ${g.token}` } });
+    assert.equal(res.status, 200);
+    open.push(res);
+  }
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(mini.stats().streams, 4);
+  for (const res of open) await res.body.cancel().catch(() => {});
+  await stop();
+});
+
+test('attack: oversized and malformed requests', async () => {
+  const g = await newGame();
+  assert.equal((await call('POST', '/api/games', { json: { playerName: 'a', name: 'x'.repeat(20000) } })).status, 413);
+  assert.equal((await call('POST', '/api/games', { headers: { 'Content-Type': 'application/json' }, raw: Buffer.from('[1,2,3]') })).status, 400);
+  assert.equal((await call('POST', '/api/games', { headers: { 'Content-Type': 'application/json' }, raw: Buffer.from('"str"') })).status, 400);
+  assert.equal((await call('POST', '/api/games', { json: { playerName: { $ne: null } } })).status, 400);
+  assert.equal((await call('POST', '/api/games', { json: { playerName: 'a', categories: Array.from({ length: 13 }, (_, i) => ({ label: `c${i}` })) } })).status, 400);
+  assert.equal((await call('POST', '/api/games', { json: { playerName: 'a', categories: 'beer' } })).status, 400);
+  assert.equal((await call('GET', `/api/games/${g.code}`, { token: 'x'.repeat(5000) })).status, 401);
+  assert.equal((await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: { length: 1 } } })).status, 404);
+  assert.equal((await call('POST', `/api/games/${g.code}/kick`, { token: g.token, json: { playerId: '__proto__' } })).status, 404);
+  assert.equal((await call('DELETE', `/api/games/${g.code}/entries/__proto__`, { token: g.token })).status, 404);
+  assert.equal((await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: { hours: 1e308 } })).status, 200);
+  const s = await state(g.code, g.token);
+  assert.equal(s.endsAt - s.startedAt, 14 * 24 * 3600_000); // capped at two weeks
+  assert.equal(Object.prototype.polluted, undefined);
+});
+
+test('attack: __proto__ in a JSON body does not pollute anything', async () => {
+  const res = await call('POST', '/api/games', { headers: { 'Content-Type': 'application/json' }, raw: Buffer.from('{"playerName":"a","__proto__":{"polluted":1},"categories":[{"label":"x","__proto__":{"polluted":1}}]}') });
+  assert.equal(res.status, 201);
+  assert.equal({}.polluted, undefined);
+});
+
+test('photos: an upload that is HTML inside a JPEG is still served as a harmless image', async () => {
+  const g = await newGame();
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  const polyglot = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('<html><script>alert(document.domain)</script>')]);
+  assert.equal((await point(g.code, g.token, 'beer', polyglot)).status, 201);
+  const photo = await call('GET', (await state(g.code, g.token)).entries[0].photo);
+  assert.equal(photo.headers.get('content-type'), 'image/jpeg');
+  assert.equal(photo.headers.get('x-content-type-options'), 'nosniff');
+  assert.match(photo.headers.get('content-security-policy'), /default-src 'none'; sandbox/);
+  assert.equal(photo.headers.get('cross-origin-resource-policy'), 'same-origin');
+});
+
+test('privacy: waiting, removed and outside players learn nothing about the photos', async () => {
+  const g = await newGame();
+  const dana = await joinAs(g.code, 'דנה'), troll = await joinAs(g.code, 'טרול');
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: dana.playerId } });
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  await point(g.code, dana.token);
+  for (const token of [troll.token]) {
+    const s = await state(g.code, token);
+    assert.deepEqual([s.entries, s.players], [[], []]);
+    assert.equal(JSON.stringify(s).includes('/photos/'), false);
+  }
+  await call('POST', `/api/games/${g.code}/kick`, { token: g.token, json: { playerId: dana.playerId } });
+  const out = await state(g.code, dana.token);
+  assert.deepEqual([out.me.status, out.entries, out.players], ['out', [], []]);
+  // Nothing in any view ever carries a token or its hash, or another player's secrets.
+  const host = JSON.stringify(await state(g.code, g.token));
+  for (const secret of [dana.token, troll.token, g.token, 'tokenHash', 'lastEntryAt']) assert.equal(host.includes(secret), false);
 });
