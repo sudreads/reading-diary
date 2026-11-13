@@ -91,13 +91,24 @@ function forgetPhotos() {
   photoCache.clear();
 }
 
+// A busy server or a flaky connection should not leave a hole in the gallery: try a few times.
+async function fetchPhoto(path, token) {
+  for (let attempt = 0; ; attempt++) {
+    let res = null;
+    try { res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } }); } catch { /* offline: retry below */ }
+    if (res && res.ok) return res.blob();
+    const permanent = res && res.status !== 429 && res.status < 500;
+    if (permanent || attempt >= 3) throw new Error(`photo ${res ? res.status : 'offline'}`);
+    await new Promise((r) => setTimeout(r, 1500 * 2 ** attempt));
+  }
+}
+
 function loadPhoto(path) {
   let item = photoCache.get(path);
   if (!item) {
     const token = session()?.token;
     item = {};
-    item.promise = fetch(path, { headers: { Authorization: `Bearer ${token}` } })
-      .then((res) => { if (!res.ok) throw new Error(`photo ${res.status}`); return res.blob(); })
+    item.promise = fetchPhoto(path, token)
       .then((blob) => { if (photoCache.get(path) !== item) throw new Error('left the game'); item.url = URL.createObjectURL(blob); return item.url; });
     item.promise.catch(() => { if (photoCache.get(path) === item) photoCache.delete(path); }); // a later view tries again
     photoCache.set(path, item);

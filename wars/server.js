@@ -86,7 +86,7 @@ function parseCategories(input) {
 }
 
 export function createApp({
-  dataDir, now = () => Date.now(), createsPerHour = 20, joinsPerMinute = 30, joinsPerGameHour = 8, requestsPerMinute = 600, codeMisses = 15,
+  dataDir, now = () => Date.now(), createsPerHour = 20, joinsPerMinute = 30, joinsPerGameHour = 40, requestsPerMinute = 3000, playerRequestsPerMinute = 900, codeMisses = 15,
   trustProxy = 0, maxGames = 3000, maxTotalBytes = 5 * 1024 ** 3,
 }) {
   const gamesDir = path.join(dataDir, 'games');
@@ -299,7 +299,7 @@ export function createApp({
 
   async function joinGame(game, req) {
     limit(`join:${ipOf(req)}`, joinsPerMinute, 60_000);
-    limit(`join:${game.code}:${ipOf(req)}`, joinsPerGameHour, 3600_000); // one phone cannot flood one waiting list
+    limit(`join:${game.code}:${ipOf(req)}`, joinsPerGameHour, 3600_000); // friends on one Wi-Fi share an address, so this is roomy; the waiting-list ceiling does the rest
     const body = await readJson(req);
     const playerName = cleanText(body.playerName, 20);
     if (!playerName) throw bad('no-name', 'איך קוראים לך?');
@@ -488,6 +488,8 @@ export function createApp({
     const parts = url.pathname.split('/').filter(Boolean);
     const m = req.method;
     const ip = ipOf(req);
+    // A whole party often sits behind one Wi-Fi address, so the per-address ceiling is high and
+    // the tight limit is per player, once we know who is asking.
     limit(`all:${ip}`, requestsPerMinute, 60_000);
 
     if (parts[0] === 'api') {
@@ -508,6 +510,7 @@ export function createApp({
       const action = parts[3];
       if (action === 'join' && m === 'POST') return sendJson(res, 201, await joinGame(game, req));
       const me = auth(game, req);
+      limit(`player:${me.id}`, playerRequestsPerMinute, 60_000);
       if (!action && m === 'GET') return sendJson(res, 200, view(game, me));
       if (action === 'events' && m === 'GET') return events(game, me, req, res);
       if (action === 'approve' && m === 'POST') return sendJson(res, 200, await approve(game, me, req));
@@ -534,6 +537,7 @@ export function createApp({
       if (res.headersSent) { res.end(); return; }
       // The rest of a refused upload is not worth reading: close the connection after answering.
       if (!req.complete) res.setHeader('Connection', 'close');
+      if (status === 429) res.setHeader('Retry-After', '10');
       sendJson(res, status, { error: e.code || 'server', message: status === 500 ? 'משהו השתבש' : e.message });
     });
   });

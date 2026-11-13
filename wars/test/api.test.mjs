@@ -537,3 +537,33 @@ test('privacy: waiting, removed and outside players learn nothing about the phot
   const host = JSON.stringify(await state(g.code, g.token));
   for (const secret of [dana.token, troll.token, g.token, 'tokenHash', 'lastEntryAt']) assert.equal(host.includes(secret), false);
 });
+
+test('a whole party on one Wi-Fi: the default limits let 25 friends join and play from one address', async () => {
+  const { req, stop } = await miniServer({}); // default limits, everyone from 127.0.0.1
+  const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
+  const friends = [];
+  for (let i = 0; i < 25; i++) {
+    const res = await req('POST', `/api/games/${g.code}/join`, { json: { playerName: `חבר ${i}` } });
+    assert.equal(res.status, 201);
+    friends.push(res.body);
+  }
+  assert.equal((await req('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { all: true } })).status, 200);
+  assert.equal((await req('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} })).status, 200);
+  // Everyone refreshes a lot: 26 players x 40 requests, all from the same address.
+  const statuses = await Promise.all([g, ...friends].flatMap((f) => Array.from({ length: 40 }, () => req('GET', `/api/games/${g.code}`, { token: f.token }).then((r) => r.status))));
+  assert.equal(statuses.every((x) => x === 200), true);
+  await stop();
+});
+
+test('attack: one player hammering the API is slowed down without hurting the others', async () => {
+  const { req, url, stop } = await miniServer({ playerRequestsPerMinute: 20 });
+  const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
+  const dana = (await req('POST', `/api/games/${g.code}/join`, { json: { playerName: 'דנה' } })).body;
+  const statuses = [];
+  for (let i = 0; i < 25; i++) statuses.push((await req('GET', `/api/games/${g.code}`, { token: dana.token })).status);
+  assert.deepEqual([statuses.filter((x) => x === 200).length, statuses.filter((x) => x === 429).length], [20, 5]);
+  const limited = await fetch(`${url}/api/games/${g.code}`, { headers: { Authorization: `Bearer ${dana.token}` } });
+  assert.equal(limited.headers.get('retry-after'), '10');
+  assert.equal((await req('GET', `/api/games/${g.code}`, { token: g.token })).status, 200); // the boss is fine
+  await stop();
+});
