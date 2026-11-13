@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2a1c6e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Hot &amp; Cold</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@600;700&display=swap">
+<style>
+:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box; }
+html { height: 100%; } body { margin: 0; }
+/* Layout: one phone screen. A big half-circle dial is the whole game; one short line above it, one big button below. Single committed look. */
+:root {
+  color-scheme: dark;
+  --bg: #2a1c6e;
+  --bg-2: #3a2a8c;
+  --ink: #ffffff;
+  --ink-soft: #c9c0f2;
+  --face: #fff7e6;
+  --rim: #150c45;
+  --far: #ffd23f;
+  --near: #ff9a1f;
+  --bull: #ff4477;
+  --needle: #12b8a6;
+  --btn: #ffd23f;
+  --btn-deep: #c79500;
+  --btn-ink: #23175c;
+  --chip: #3f2f96;
+  --display: "Fredoka", "Arial Rounded MT Bold", system-ui, sans-serif;
+  --body: "Nunito", system-ui, sans-serif;
+}
+html, body { height: 100%; }
+body {
+  background: radial-gradient(120% 70% at 50% 0%, var(--bg-2), var(--bg) 70%) var(--bg);
+  color: var(--ink); font-family: var(--body); font-weight: 600; font-size: 18px; line-height: 1.4;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 12px;
+  box-sizing: border-box; overflow-x: hidden; -webkit-tap-highlight-color: transparent;
+}
+* { box-sizing: border-box; }
+#app { height: 100%; max-width: 460px; margin-inline: auto; display: flex; flex-direction: column; gap: 12px; }
+h1, h2 { font-family: var(--display); margin: 0; text-wrap: balance; line-height: 1.1; }
+p { margin: 0; }
+
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 40px; }
+.chip { font: 700 15px var(--body); color: var(--ink); background: var(--chip); border: 0; border-radius: 999px; padding: 7px 14px; }
+button.chip { cursor: pointer; }
+.star { color: var(--far); }
+
+.mid { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; justify-content: center; gap: 18px; }
+.head { text-align: center; display: flex; flex-direction: column; gap: 6px; }
+.head h2 { font-size: clamp(28px, 8.5vw, 38px); }
+.head p { color: var(--ink-soft); }
+
+.dial { width: 100%; display: block; overflow: visible; }
+.dial.drag { touch-action: none; cursor: grab; }
+.dial:focus-visible { outline: 3px solid var(--far); outline-offset: 6px; border-radius: 12px; }
+.pop .wedge { transform-origin: 150px 150px; animation: fan .5s cubic-bezier(.3,1.5,.5,1) both; }
+@keyframes fan { from { transform: scale(0); } to { transform: scale(1); } }
+.ends { display: flex; justify-content: space-between; gap: 12px; margin-top: -8px; }
+.ends span { font: 600 19px var(--display); max-width: 48%; }
+.ends span:last-child { text-align: right; }
+
+.btn {
+  font: 700 22px var(--display); color: var(--btn-ink); background: var(--btn); border: 0; border-radius: 22px;
+  padding: 16px 20px; width: 100%; cursor: pointer; box-shadow: 0 6px 0 var(--btn-deep); transition: transform .08s, box-shadow .08s;
+}
+.btn:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--btn-deep); }
+.btn.quiet { background: transparent; color: var(--ink-soft); box-shadow: none; font-size: 17px; padding-block: 8px; text-decoration: underline; }
+.btn:focus-visible, .chip:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+.actions { display: flex; flex-direction: column; gap: 10px; padding-bottom: 8px; }
+
+.logo { font-size: clamp(48px, 15vw, 68px); font-weight: 700; text-align: center; }
+.logo .h { color: var(--bull); } .logo .c { color: var(--needle); } .logo .a { color: var(--far); }
+.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.steps li { display: flex; gap: 12px; align-items: center; }
+.steps b { flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--chip); font: 700 18px var(--display); display: grid; place-items: center; }
+
+.fields { display: flex; flex-direction: column; gap: 14px; }
+.fields label { display: flex; flex-direction: column; gap: 6px; color: var(--ink-soft); font-size: 16px; }
+.fields input {
+  font: 600 22px var(--display); color: var(--btn-ink); background: var(--face); border: 4px solid transparent;
+  border-radius: 18px; padding: 13px 16px; width: 100%; min-width: 0;
+}
+.fields input::placeholder { color: #a99fc9; }
+.fields input:focus { outline: none; border-color: var(--needle); }
+.fields input.miss { border-color: var(--bull); }
+.wheel { width: min(100%, 330px); display: block; margin-inline: auto; overflow: visible; }
+#spin { transform-origin: 150px 150px; transition: transform 3.6s cubic-bezier(.12,.75,.15,1); }
+.wheel text { font-size: 34px; text-anchor: middle; dominant-baseline: central; }
+.big { font-size: clamp(34px, 10vw, 46px); }
+.eye { font-size: 76px; line-height: 1; text-align: center; }
+.stars { font-size: 46px; line-height: 1; display: flex; justify-content: center; gap: 6px; }
+.stars span { color: var(--chip); }
+.stars span.on { color: var(--far); animation: starpop .5s cubic-bezier(.3,1.8,.5,1) both; }
+.stars span.on:nth-child(2) { animation-delay: .15s; } .stars span.on:nth-child(3) { animation-delay: .3s; }
+@keyframes starpop { from { transform: scale(0) rotate(-40deg); } to { transform: scale(1) rotate(0); } }
+.final { font: 700 clamp(64px, 22vw, 96px) var(--display); line-height: 1; text-align: center; }
+.final small { font-size: .4em; color: var(--ink-soft); }
+@media (prefers-reduced-motion: reduce) { *, #spin { animation: none !important; transition: none !important; } }
+</style>
+
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+(function () {
+  var ROUNDS = 6;
+  var CARDS = [
+    ["🤢 Yucky", "Yummy 😋"], ["😴 Boring", "Fun 🎉"], ["👌 Easy", "Hard 🥵"], ["🐜 Tiny", "Giant 🐘"],
+    ["🤫 Quiet", "Loud 📢"], ["🐢 Slow", "Fast 🚀"], ["👻 Scary", "Cute 🐥"], ["🧊 Cold", "Hot 🔥"],
+    ["🧸 Soft", "Hard 🪨"], ["🪙 Cheap", "Expensive 💎"], ["🧦 Stinky", "Smells great 🌸"], ["🙂 Normal", "Weird 🤪"],
+    ["😢 Sad", "Happy 😄"], ["🦈 Terrible pet", "Perfect pet 🐶"], ["🥱 Useless superpower", "Awesome superpower 🦸"],
+    ["🦕 Ancient", "Brand new ✨"], ["🧦 Boring gift", "Dream gift 🎁"], ["😐 Not funny", "Hilarious 🤣"],
+    ["🪶 Light", "Heavy 🏋️"], ["🦄 Rare", "Everywhere 🌍"], ["🥦 Healthy", "Junk food 🍭"], ["🐷 Dirty", "Clean 🫧"],
+    ["🐭 Short", "Tall 🦒"], ["⚡ Super quick", "Takes forever ⏳"], ["🧐 Boring job", "Cool job 🧑‍🚀"],
+    ["🙈 Bad idea", "Genius idea 💡"], ["🧘 Calming", "Stressful 😱"], ["✏️ Easy to draw", "Hard to draw 🎨"],
+    ["🌧️ Bad day", "Best day ever 🌈"], ["🏚️ Bad place for a trip", "Great place for a trip 🏝️"]
+  ];
+  var MSG = ["Cold! Next time", "Warm...", "Very hot!", "Bullseye!"];
+
+  var S = { screen: "home", round: 0, score: 0, ends: ["", ""], draft: ["", ""], wheel: [], pick: null, pickIdx: -1, rot: 0, target: 70, guess: 50, stars: 0, exitArmed: false };
+  var app = document.getElementById("app");
+
+  function giver() { return (S.round % 2) + 1; }
+  function esc(t) { return String(t).replace(/[&<>"']/g, function (c) { return "&#" + c.charCodeAt(0) + ";"; }); }
+  function newTopic() { S.draft = ["", ""]; S.pick = null; S.pickIdx = -1; S.screen = "topic"; }
+  function beginRound(ends) { S.ends = ends; S.target = 6 + Math.round(Math.random() * 88); S.screen = "pass"; }
+  function openWheel() {
+    var all = CARDS.map(function (_, i) { return i; });
+    for (var i = all.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var x = all[i]; all[i] = all[j]; all[j] = x; }
+    S.wheel = all.slice(0, 8); S.pick = null; S.pickIdx = -1; S.rot = 0; S.screen = "wheel";
+  }
+  function wp(a, r) { var t = a * Math.PI / 180; return (150 + r * Math.sin(t)).toFixed(1) + " " + (150 - r * Math.cos(t)).toFixed(1); }
+  function wheel() {
+    var cols = ["var(--far)", "var(--bull)", "var(--needle)", "var(--face)"], g = "";
+    S.wheel.forEach(function (ci, k) {
+      var m = wp(k * 45 + 22.5, 96).split(" ");
+      g += '<path d="M150 150 L' + wp(k * 45, 140) + ' A140 140 0 0 1 ' + wp(k * 45 + 45, 140) + ' Z" fill="' + cols[k % 4] + '" stroke="var(--rim)" stroke-width="3"/>' +
+        '<text x="' + m[0] + '" y="' + m[1] + '">' + CARDS[ci][0].split(" ")[0] + '</text>';
+    });
+    return '<svg class="wheel" viewBox="-4 -18 308 316" aria-hidden="true"><circle cx="150" cy="150" r="148" fill="var(--rim)"/>' +
+      '<g id="spin" style="transform:rotate(' + S.rot + 'deg)">' + g + '</g>' +
+      '<circle cx="150" cy="150" r="16" fill="var(--rim)"/>' +
+      '<path d="M150 26 L132 -12 L168 -12 Z" fill="var(--face)" stroke="var(--rim)" stroke-width="4" stroke-linejoin="round"/></svg>';
+  }
+  function spin() {
+    var i; do { i = Math.floor(Math.random() * 8); } while (i === S.pickIdx);
+    S.pickIdx = i; S.pick = null;
+    S.rot = (Math.floor(S.rot / 360) + 6) * 360 + (360 - (i * 45 + 22.5));
+    var still = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById("spin").style.transform = "rotate(" + S.rot + "deg)";
+    var b = app.querySelectorAll(".actions button");
+    for (var k = 0; k < b.length; k++) b[k].disabled = true;
+    setTimeout(function () { if (S.screen === "wheel" && S.pickIdx === i) { S.pick = S.wheel[i]; render(); } }, still ? 50 : 3700);
+  }
+  function starsFor(d) { return d <= 4 ? 3 : d <= 10 ? 2 : d <= 18 ? 1 : 0; }
+
+  // value 0..100 runs along the half circle from left to right
+  function pt(v, r) { var a = Math.PI * (1 - v / 100); return (150 + r * Math.cos(a)).toFixed(1) + " " + (150 - r * Math.sin(a)).toFixed(1); }
+  function wedge(w, color) {
+    return '<path d="M150 150 L' + pt(S.target - w, 150) + ' A150 150 0 0 1 ' + pt(S.target + w, 150) + ' Z" fill="' + color + '"/>';
+  }
+  function dial(showTarget, showNeedle, drag, pop, ends) {
+    var c = ends || S.ends;
+    return '<div><svg class="dial' + (drag ? " drag" : "") + (pop ? " pop" : "") + '" id="dial" viewBox="0 0 300 174"' +
+      (drag ? ' role="slider" tabindex="0" aria-label="Your guess" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + S.guess + '"' : ' aria-hidden="true"') + '>' +
+      '<defs><clipPath id="half"><path d="M15 150 A135 135 0 0 1 285 150 Z"/></clipPath></defs>' +
+      '<path d="M2 150 A148 148 0 0 1 298 150 L298 160 Q298 170 288 170 L12 170 Q2 170 2 160 Z" fill="var(--rim)"/>' +
+      '<path d="M15 150 A135 135 0 0 1 285 150 Z" fill="var(--face)"/>' +
+      (showTarget ? '<g clip-path="url(#half)"><g class="wedge">' + wedge(18, "var(--far)") + wedge(10, "var(--near)") + wedge(4, "var(--bull)") + '</g></g>' : "") +
+      (showNeedle ? '<line id="needle" x1="150" y1="150" x2="' + pt(S.guess, 122).replace(" ", '" y2="') + '" stroke="var(--needle)" stroke-width="9" stroke-linecap="round"/>' : "") +
+      '<circle cx="150" cy="150" r="20" fill="var(--needle)"/><circle cx="150" cy="150" r="7" fill="var(--rim)"/>' +
+      '</svg><div class="ends"><span>' + esc(c[0]) + '</span><span>' + esc(c[1]) + '</span></div></div>';
+  }
+  function bar() {
+    return '<div class="bar"><button class="chip" data-a="exit">' + (S.exitArmed ? "Quit? Tap again" : "✕ Quit") + '</button>' +
+      '<span class="chip">Round ' + (S.round + 1) + ' / ' + ROUNDS + '</span>' +
+      '<span class="chip"><span class="star">★</span> ' + S.score + '</span></div>';
+  }
+
+  function render() {
+    var h = "", g = giver(), o = 3 - g;
+    if (S.screen === "home") {
+      var keep = [S.target, S.guess]; S.target = 72; S.guess = 66;
+      h = '<div class="mid"><h1 class="logo"><span class="h">Hot</span> <span class="a">&amp;</span> <span class="c">Cold</span></h1>' +
+        dial(true, true, false, false, CARDS[0]) +
+        '<ol class="steps"><li><b>1</b>Pick a topic together, or spin for one.</li>' +
+        '<li><b>2</b>One player peeks at the secret target and says a clue.</li>' +
+        '<li><b>3</b>The other player turns the needle to guess!</li></ol></div>' +
+        '<div class="actions"><button class="btn" data-a="start">Play</button></div>';
+      S.target = keep[0]; S.guess = keep[1];
+    } else if (S.screen === "topic") {
+      h = bar() + '<div class="mid"><div class="head"><h2 class="big">Pick a topic</h2><p>Write the two sides of the dial.</p></div>' +
+        '<div class="fields"><label for="left">Left side<input id="left" maxlength="22" autocomplete="off" placeholder="like: Yucky" value="' + esc(S.draft[0]) + '"></label>' +
+        '<label for="right">Right side<input id="right" maxlength="22" autocomplete="off" placeholder="like: Yummy" value="' + esc(S.draft[1]) + '"></label></div></div>' +
+        '<div class="actions"><button class="btn" data-a="go">Start round</button><button class="btn quiet" data-a="wheel">No idea? Spin the wheel</button></div>';
+    } else if (S.screen === "wheel") {
+      var pc = S.pick == null ? null : CARDS[S.pick];
+      h = bar() + '<div class="mid"><div class="head"><h2>' + (pc ? pc[0] + ' ↔ ' + pc[1] : "Spin for a topic") + '</h2></div>' + wheel() + '</div>' +
+        '<div class="actions">' + (pc ? '<button class="btn" data-a="use">Play this one</button><button class="btn quiet" data-a="spin">Spin again</button>'
+          : '<button class="btn" data-a="spin">Spin!</button><button class="btn quiet" data-a="write">Write my own</button>') + '</div>';
+    } else if (S.screen === "pass") {
+      h = bar() + '<div class="mid"><div class="eye">🙈</div><div class="head"><h2 class="big">Player ' + g + ', your turn!</h2>' +
+        '<p>Player ' + o + ', look away.</p></div></div>' +
+        '<div class="actions"><button class="btn" data-a="show">Show me the target</button></div>';
+    } else if (S.screen === "clue") {
+      h = bar() + '<div class="mid"><div class="head"><h2>Say a clue for this spot</h2><p>Don\'t show Player ' + o + '!</p></div>' +
+        dial(true, false, false, false) + '</div>' +
+        '<div class="actions"><button class="btn" data-a="hide">Done! Hide it</button></div>';
+    } else if (S.screen === "guess") {
+      h = bar() + '<div class="mid"><div class="head"><h2>Player ' + o + ', where is it?</h2><p>Turn the needle with your finger.</p></div>' +
+        dial(false, true, true, false) + '</div>' +
+        '<div class="actions"><button class="btn" data-a="lock">Lock it in!</button></div>';
+    } else if (S.screen === "reveal") {
+      var st = "";
+      for (var i = 0; i < 3; i++) st += '<span class="' + (i < S.stars ? "on" : "") + '">★</span>';
+      h = bar() + '<div class="mid"><div class="head"><div class="stars" aria-label="' + S.stars + ' of 3 stars">' + st + '</div><h2>' + MSG[S.stars] + '</h2></div>' +
+        dial(true, true, false, true) + '</div>' +
+        '<div class="actions"><button class="btn" data-a="next">' + (S.round + 1 >= ROUNDS ? "See our score" : "Next round") + '</button></div>';
+    } else {
+      var max = ROUNDS * 3, p = S.score / max;
+      h = '<div class="mid"><div class="final"><span class="star">★</span> ' + S.score + '<small> / ' + max + '</small></div>' +
+        '<div class="head"><h2 class="big">' + (p >= .75 ? "You read minds!" : p >= .45 ? "You think alike!" : "Warming up!") + '</h2>' +
+        '<p>Stars you won together</p></div></div>' +
+        '<div class="actions"><button class="btn" data-a="start">Play again</button></div>';
+    }
+    app.innerHTML = h;
+    if (S.screen === "guess") bindDrag();
+  }
+
+  function setGuess(v) {
+    S.guess = Math.max(0, Math.min(100, Math.round(v)));
+    var n = document.getElementById("needle"), d = document.getElementById("dial");
+    if (!n) return;
+    var p = pt(S.guess, 122).split(" ");
+    n.setAttribute("x2", p[0]); n.setAttribute("y2", p[1]);
+    d.setAttribute("aria-valuenow", S.guess);
+  }
+  function bindDrag() {
+    var d = document.getElementById("dial"), on = false;
+    function move(e) {
+      var r = d.getBoundingClientRect();
+      var x = (e.clientX - r.left) * 300 / r.width - 150, y = 150 - (e.clientY - r.top) * 174 / r.height;
+      var a = Math.atan2(y, x);
+      if (a < 0) a = x < 0 ? Math.PI : 0;
+      setGuess((1 - a / Math.PI) * 100);
+    }
+    d.addEventListener("pointerdown", function (e) { on = true; try { d.setPointerCapture(e.pointerId); } catch (x) {} move(e); e.preventDefault(); });
+    d.addEventListener("pointermove", function (e) { if (on) move(e); });
+    d.addEventListener("pointerup", function () { on = false; });
+    d.addEventListener("pointercancel", function () { on = false; });
+    d.addEventListener("keydown", function (e) {
+      var k = { ArrowRight: 2, ArrowUp: 2, ArrowLeft: -2, ArrowDown: -2 }[e.key];
+      if (k) { setGuess(S.guess + k); e.preventDefault(); }
+    });
+  }
+
+  app.addEventListener("click", function (e) {
+    var el = e.target.closest("[data-a]"); if (!el) return;
+    var a = el.getAttribute("data-a");
+    if (a !== "exit") S.exitArmed = false;
+    if (a === "spin") { spin(); return; }
+    if (a === "go") {
+      var l = document.getElementById("left"), r = document.getElementById("right"), bad = !l.value.trim() ? l : !r.value.trim() ? r : null;
+      if (bad) { bad.classList.add("miss"); bad.focus(); return; }
+      beginRound([l.value.trim(), r.value.trim()]);
+    }
+    else if (a === "wheel") openWheel();
+    else if (a === "write") S.screen = "topic";
+    else if (a === "use") beginRound(CARDS[S.pick]);
+    else if (a === "start") { S.round = 0; S.score = 0; newTopic(); }
+    else if (a === "show") S.screen = "clue";
+    else if (a === "hide") { S.guess = 50; S.screen = "guess"; }
+    else if (a === "lock") { S.stars = starsFor(Math.abs(S.guess - S.target)); S.score += S.stars; S.screen = "reveal"; }
+    else if (a === "next") { S.round++; if (S.round >= ROUNDS) S.screen = "end"; else newTopic(); }
+    else if (a === "exit") { if (S.exitArmed) { S.exitArmed = false; S.screen = "home"; } else S.exitArmed = true; }
+    render();
+  });
+
+  app.addEventListener("input", function (e) {
+    if (e.target.id === "left") S.draft[0] = e.target.value;
+    if (e.target.id === "right") S.draft[1] = e.target.value;
+    e.target.classList.remove("miss");
+  });
+
+  function start(data) {
+    if (data && data.S) for (var k in data.S) S[k] = data.S[k];
+    render();
+  }
+  var hot = window.claude && window.claude.hot;
+  if (hot && hot.snapshot) hot.snapshot(function () { return { S: S }; });
+  if (hot && hot.ready) hot.ready(start); else start((hot && hot.data) || {});
+})();
+</script>
+</body>
+</html>
