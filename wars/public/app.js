@@ -39,9 +39,16 @@ async function api(method, path, { body, raw, token } = {}) {
   let payload;
   if (raw) { payload = raw; headers['Content-Type'] = raw.type || 'image/jpeg'; }
   else if (body) { payload = JSON.stringify(body); headers['Content-Type'] = 'application/json'; }
+  // Bad reception at a party is normal: a request that hangs must give up, or it would hold
+  // every button on the screen hostage.
+  const control = new AbortController();
+  const timer = setTimeout(() => control.abort(), raw ? 60_000 : 15_000);
   let res;
-  try { res = await fetch(`/api${path}`, { method, headers, body: payload }); }
-  catch { throw Object.assign(new Error('אין חיבור לשרת. בדקו את האינטרנט ונסו שוב'), { code: 'offline' }); }
+  try { res = await fetch(`/api${path}`, { method, headers, body: payload, signal: control.signal }); }
+  catch {
+    const message = control.signal.aborted ? 'זה לוקח יותר מדי זמן. הקליטה חלשה? נסו שוב' : 'אין חיבור לשרת. בדקו את האינטרנט ונסו שוב';
+    throw Object.assign(new Error(message), { code: 'offline' });
+  } finally { clearTimeout(timer); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.message || 'משהו השתבש'), { code: data.error, status: res.status });
   return data;
@@ -79,7 +86,14 @@ function go(hash) { if (location.hash === hash) route(); else location.hash = ha
 
 function disconnect() {
   if (app.stream) { app.stream.close(); app.stream = null; }
+  setOffline(false);
 }
+
+// The phone itself often knows first: show it at once, and reconnect the moment it is back.
+addEventListener('offline', () => { if (app.code) setOffline(true); });
+addEventListener('online', () => { if (app.code) { disconnect(); connect(); } });
+
+function setOffline(off) { document.getElementById('net').hidden = !off; }
 
 // ----- photos -----
 // Photos are private to the group, so a plain <img src> cannot load them: each one is fetched
@@ -171,11 +185,20 @@ function connect() {
         }
         if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
         wait = 1000;
+        setOffline(false);
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
         for (;;) {
-          const { value, done } = await reader.read();
+          // The server sends something at least every 25 seconds. Silence for much longer means the
+          // connection died without telling us (tunnel, lift, dead zone): drop it and reconnect.
+          let watchdog;
+          const quiet = new Promise((_, reject) => { watchdog = setTimeout(() => reject(new Error('stream went quiet')), 45_000); });
+          let chunk;
+          try { chunk = await Promise.race([reader.read(), quiet]); }
+          catch (e) { reader.cancel().catch(() => {}); throw e; }
+          finally { clearTimeout(watchdog); }
+          const { value, done } = chunk;
           if (done) break;
           buf += decoder.decode(value, { stream: true });
           if (buf.length > 4_000_000) throw new Error('stream too large');
@@ -188,6 +211,7 @@ function connect() {
         }
       } catch { /* offline, server restart, bad chunk: fall through and reconnect */ }
       if (!alive()) return;
+      setOffline(true); // the board on screen may be stale until we are back
       await new Promise((r) => setTimeout(r, wait));
       wait = Math.min(wait * 2, 15000);
     }

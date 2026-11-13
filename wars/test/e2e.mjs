@@ -31,7 +31,7 @@ async function phone(name) {
   const page = await ctx.newPage();
   page.on('request', (r) => urls.push(r.url()));
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: console: ${m.text()}`); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/ERR_INTERNET_DISCONNECTED|Failed to load resource/.test(m.text())) errors.push(`${name}: console: ${m.text()}`); });
   return page;
 }
 
@@ -55,6 +55,15 @@ async function addPoint(page, catLabel, photo, note) {
   await page.getByRole('button', { name: /זה נחשב/ }).click();
   await page.locator('.sheet-panel').waitFor({ state: 'detached' });
 }
+
+// Remove the newest photo straight through the API, as the given player.
+const deleteNewest = (page) => page.evaluate(async (gameCode) => {
+  const { token } = JSON.parse(localStorage.getItem('fw.sessions'))[gameCode];
+  const auth = { Authorization: `Bearer ${token}` };
+  const game = await (await fetch(`/api/games/${gameCode}`, { headers: auth })).json();
+  return (await fetch(`/api/games/${gameCode}/entries/${game.entries.at(-1).id}`, { method: 'DELETE', headers: auth })).status;
+}, currentCode);
+let currentCode = '';
 
 const shot = (page, name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
 
@@ -83,6 +92,7 @@ try {
   await boss.locator('.code').waitFor();
   const code = (await boss.locator('.code').textContent()).trim();
   assert.match(code, /^[A-Z2-9]{6}$/);
+  currentCode = code;
 
   // --- two friends join: one by code, one by invite link ---
   const dana = await phone('dana');
@@ -163,14 +173,7 @@ try {
     await yossi.getByRole('tab', { name: 'גלריה (7)' }).waitFor();
     assert.equal(await yossi.locator('.tile').count(), 7);
     assert.equal(await yossi.locator('.chips.scroll').evaluate((el) => el.scrollLeft), before);
-    // The boss takes that extra photo back (straight through the API), so the story below is unchanged.
-    const status = await boss.evaluate(async (gameCode) => {
-      const { token } = JSON.parse(localStorage.getItem('fw.sessions'))[gameCode];
-      const auth = { Authorization: `Bearer ${token}` };
-      const game = await (await fetch(`/api/games/${gameCode}`, { headers: auth })).json();
-      return (await fetch(`/api/games/${gameCode}/entries/${game.entries.at(-1).id}`, { method: 'DELETE', headers: auth })).status;
-    }, code);
-    assert.equal(status, 200);
+    assert.equal(await deleteNewest(boss), 200); // the boss takes that extra photo back, so the story below is unchanged
     await yossi.getByRole('tab', { name: 'גלריה (6)' }).waitFor();
     await yossi.getByRole('tab', { name: 'משחק' }).click();
   }
@@ -208,6 +211,28 @@ try {
   await late.getByText('ברשימת ההמתנה').waitFor();
   await boss.getByRole('button', { name: 'להכניס את מאחר' }).click();
   await late.locator('.action').first().waitFor();
+
+  // --- bad reception: the player is told, nothing gets stuck, and the retry works ---
+  {
+    const net = late.locator('#net');
+    assert.equal(await net.isVisible(), false);
+    await late.context().setOffline(true);
+    await net.waitFor({ state: 'visible' });
+    clock += 4000;
+    const chooser = late.waitForEvent('filechooser');
+    await late.locator('.action', { hasText: 'להיות במסיבה' }).click();
+    await (await chooser).setFiles(photos.beach);
+    await late.getByRole('button', { name: /זה נחשב/ }).click();
+    await late.getByRole('button', { name: 'לנסות שוב' }).waitFor(); // failed, the photo is still here
+    await late.locator('.toast.show.bad').waitFor();
+    await late.context().setOffline(false);
+    await net.waitFor({ state: 'hidden', timeout: 20000 });
+    await late.getByRole('button', { name: 'לנסות שוב' }).click();
+    await late.locator('.sheet-panel').waitFor({ state: 'detached' });
+    assert.equal((await late.locator('.action', { hasText: 'להיות במסיבה' }).locator('.action-count').textContent()).trim(), '1');
+    assert.equal(await deleteNewest(boss), 200); // keep the story below unchanged
+    await late.getByRole('tab', { name: 'גלריה (6)' }).waitFor();
+  }
 
   // --- a hostile player: markup in the name and in a caption must stay plain text ---
   const evil = await phone('evil');
