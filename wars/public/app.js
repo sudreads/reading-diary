@@ -204,8 +204,36 @@ function onState(game) {
   // The final whistle pulls everyone to the results, whatever they were looking at.
   if (game.status === 'ended' && (app.tab !== 'gallery' || before?.status === 'active')) app.tab = 'results';
   if (game.status !== 'ended' && app.tab === 'results') app.tab = 'play';
+  refresh(game);
+}
+
+// Updates from other players arrive all the time; the screen is rebuilt only when something on it
+// can actually have changed, and never under a finger that is busy with a picker.
+let shown = ''; // what the screen was last built from
+let deferTimer = null;
+
+function refresh(game) {
+  const signature = `${app.code}|${app.tab}|${JSON.stringify({ ...game, serverTime: 0 })}`;
+  if (signature === shown) return;
+  const active = document.activeElement;
+  const pickerOpen = active && active.tagName === 'SELECT' && main.contains(active);
+  if (pickerOpen && game.me.status === 'in' && game.status === app.game?.status && !deferTimer) {
+    deferTimer = setTimeout(flushDeferred, 6000); // however long the picker stays open, catch up by then
+    return;
+  }
+  if (deferTimer) return; // a rebuild is already waiting for the picker to close
   render();
 }
+
+function flushDeferred() {
+  if (!deferTimer) return;
+  clearTimeout(deferTimer);
+  deferTimer = null;
+  if (app.code && app.game) render();
+}
+
+main.addEventListener('focusout', (e) => { if (e.target.tagName === 'SELECT') setTimeout(flushDeferred, 0); });
+main.addEventListener('change', (e) => { if (e.target.tagName === 'SELECT') setTimeout(flushDeferred, 0); });
 
 // Toasts for things that happened while you were looking.
 function announce(before, game) {
@@ -377,7 +405,11 @@ function burst(emoji) {
 function render() {
   if (!app.code) return;
   const g = app.game;
+  shown = g ? `${app.code}|${app.tab}|${JSON.stringify({ ...g, serverTime: 0 })}` : '';
+  // A rebuild must not throw the reader back: keep the sideways scroll of the filter chips.
+  const chipScroll = [...main.querySelectorAll('.chips.scroll')].map((el) => el.scrollLeft);
   clear(main);
+  queueMicrotask(() => main.querySelectorAll('.chips.scroll').forEach((el, i) => { if (chipScroll[i]) el.scrollLeft = chipScroll[i]; }));
   if (!g) { mount(h('div', { class: 'center' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'מתחברים למשחק…'))); return; }
   mount(header(g));
   if (g.me.status === 'out') return mount(outView());

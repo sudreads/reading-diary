@@ -141,6 +141,40 @@ try {
     assert.equal((await yossi.locator('.action', { hasText: 'לשתות בירה' }).locator('.action-count').textContent()).trim(), '0');
   }
 
+  // --- updates from others must not disturb what you are doing ---
+  {
+    await yossi.getByRole('tab', { name: /גלריה/ }).click();
+    await yossi.locator('.tile').first().waitFor();
+    const chips = yossi.locator('.chips.scroll');
+    await chips.evaluate((el) => { el.scrollLeft = -150; }); // RTL: scrolling goes negative
+    const before = await chips.evaluate((el) => el.scrollLeft);
+    assert.notEqual(before, 0);
+    await yossi.evaluate(() => { document.querySelector('.tile').dataset.mark = 'same'; });
+    // The boss looks at the game again (a state push with nothing new): nothing is rebuilt.
+    await boss.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await yossi.waitForTimeout(400);
+    assert.equal(await yossi.locator('.tile[data-mark=same]').count(), 1);
+    // A picker is open when a new photo arrives: the list waits, then catches up; the chips stay put.
+    await yossi.locator('main select').focus();
+    await addPoint(boss, 'לשתות בירה', photos.beer);
+    await yossi.waitForTimeout(400);
+    assert.equal(await yossi.locator('.tile').count(), 6);
+    await yossi.locator('main select').blur();
+    await yossi.getByRole('tab', { name: 'גלריה (7)' }).waitFor();
+    assert.equal(await yossi.locator('.tile').count(), 7);
+    assert.equal(await yossi.locator('.chips.scroll').evaluate((el) => el.scrollLeft), before);
+    // The boss takes that extra photo back (straight through the API), so the story below is unchanged.
+    const status = await boss.evaluate(async (gameCode) => {
+      const { token } = JSON.parse(localStorage.getItem('fw.sessions'))[gameCode];
+      const auth = { Authorization: `Bearer ${token}` };
+      const game = await (await fetch(`/api/games/${gameCode}`, { headers: auth })).json();
+      return (await fetch(`/api/games/${gameCode}/entries/${game.entries.at(-1).id}`, { method: 'DELETE', headers: auth })).status;
+    }, code);
+    assert.equal(status, 200);
+    await yossi.getByRole('tab', { name: 'גלריה (6)' }).waitFor();
+    await yossi.getByRole('tab', { name: 'משחק' }).click();
+  }
+
   // --- live board ---
   await boss.getByRole('tab', { name: 'טבלה' }).click();
   await boss.locator('.rank').first().waitFor();
