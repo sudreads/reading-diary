@@ -732,3 +732,31 @@ test('rematch: the boss opens another round and the old members walk straight in
   await call('POST', `/api/games/${opened.body.code}/end`, { token: opened.body.token });
   assert.equal((await state(g.code, dana.token)).rematch, undefined);
 });
+
+test('reactions: tap to add, tap again to remove, counts only', async () => {
+  const g = await newGame();
+  const dana = await joinAs(g.code, 'דנה'), troll = await joinAs(g.code, 'טרול');
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: dana.playerId } });
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  const id = (await point(g.code, dana.token)).body.id;
+  const react = (token, emoji, entry = id) => call('POST', `/api/games/${g.code}/entries/${entry}/react`, { token, json: { emoji } });
+
+  assert.deepEqual((await react(g.token, '🔥')).body.reactions, { '🔥': { n: 1, mine: true } });
+  assert.deepEqual((await react(dana.token, '🔥')).body.reactions, { '🔥': { n: 2, mine: true } });
+  await react(dana.token, '😂');
+  assert.deepEqual((await state(g.code, g.token)).entries[0].reactions, { '🔥': { n: 2, mine: true }, '😂': { n: 1, mine: false } });
+  assert.deepEqual((await react(g.token, '🔥')).body.reactions, { '🔥': { n: 1, mine: false }, '😂': { n: 1, mine: false } }); // taken back
+  await react(dana.token, '😂');
+  assert.deepEqual((await state(g.code, dana.token)).entries[0].reactions, { '🔥': { n: 1, mine: true } });
+
+  // Only the fixed set, only members, only real photos; ids of who reacted never leave the server.
+  for (const emoji of ['💩', '<script>', '', 5, null, ['🔥'], '__proto__', 'constructor']) assert.equal((await react(g.token, emoji)).status, 400, String(emoji));
+  assert.equal((await react(troll.token, '🔥')).status, 403);
+  assert.equal((await react(g.token, '🔥', 'nope')).status, 404);
+  assert.equal((await call('POST', `/api/games/${g.code}/entries/${id}/react`, { json: { emoji: '🔥' } })).status, 401);
+  assert.equal(JSON.stringify((await state(g.code, g.token)).entries).includes(dana.playerId + '"]'), false);
+
+  // Still possible after the final whistle.
+  await call('POST', `/api/games/${g.code}/end`, { token: g.token });
+  assert.equal((await react(g.token, '👏')).status, 200);
+});

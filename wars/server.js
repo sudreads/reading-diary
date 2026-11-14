@@ -32,6 +32,8 @@ const MAX_GAME_MS = 14 * DAY_MS; // a game nobody ever ended is ended for them
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const CODE_LENGTH = 6; // 32^6 = a billion codes; guesses are rate-limited as well
 
+export const REACTIONS = ['🔥', '😂', '👏', '🍻', '🤢'];
+
 export const DEFAULT_CATEGORIES = [
   { id: 'beer', emoji: '🍺', label: 'לשתות בירה' },
   { id: 'water', emoji: '💧', label: 'לשתות מים' },
@@ -188,8 +190,18 @@ export function createApp({
     return {
       ...base, players: visible.map(pub),
       waitingCount: game.players.filter((p) => p.status === 'waiting').length,
-      entries: game.entries.map((e) => ({ id: e.id, playerId: e.playerId, cat: e.cat, photo: `/api/games/${game.code}/photos/${e.file}`, thumb: `/api/games/${game.code}/photos/${e.thumb || e.file}`, ts: e.ts, note: e.note || '' })),
+      entries: game.entries.map((e) => ({ id: e.id, playerId: e.playerId, cat: e.cat, photo: `/api/games/${game.code}/photos/${e.file}`, thumb: `/api/games/${game.code}/photos/${e.thumb || e.file}`, ts: e.ts, note: e.note || '', reactions: reactionView(e, me) })),
     };
+  }
+
+  // { '🔥': { n: 3, mine: true } } - counts only: who reacted stays on the server.
+  function reactionView(entry, me) {
+    const out = {};
+    for (const emoji of REACTIONS) {
+      const ids = entry.reactions?.[emoji];
+      if (ids && ids.length) out[emoji] = { n: ids.length, mine: ids.includes(me.id) };
+    }
+    return out;
   }
 
   function broadcast(game) {
@@ -484,6 +496,23 @@ export function createApp({
     } finally { uploading.delete(me.id); }
   }
 
+  // Tap to react, tap again to take it back. One of each emoji per player per photo.
+  async function react(game, me, entryId, req) {
+    requireIn(me);
+    if (game.status === 'lobby') throw new HttpError(409, 'not-active', 'המשחק עוד לא התחיל');
+    const entry = game.entries.find((e) => e.id === entryId);
+    if (!entry) throw new HttpError(404, 'no-entry', 'התמונה לא נמצאה');
+    const body = await readJson(req);
+    if (!REACTIONS.includes(body.emoji)) throw bad('bad-reaction', 'תגובה לא מוכרת');
+    entry.reactions ||= {};
+    const ids = entry.reactions[body.emoji] ||= [];
+    const at = ids.indexOf(me.id);
+    if (at >= 0) ids.splice(at, 1); else ids.push(me.id);
+    if (!ids.length) delete entry.reactions[body.emoji];
+    await changed(game);
+    return { ok: true, reactions: reactionView(entry, me) };
+  }
+
   async function removeEntry(game, me, entryId) {
     requireIn(me);
     const i = game.entries.findIndex((e) => e.id === entryId);
@@ -583,7 +612,7 @@ export function createApp({
       if (origin && m !== 'GET' && !sameHost(origin, req.headers.host)) throw new HttpError(403, 'cross-origin');
       if (m !== 'GET' && req.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'cross-origin');
       if (parts[1] === 'health' && m === 'GET') return sendJson(res, 200, { ok: true });
-      if (parts[1] === 'defaults' && m === 'GET') return sendJson(res, 200, { categories: DEFAULT_CATEGORIES });
+      if (parts[1] === 'defaults' && m === 'GET') return sendJson(res, 200, { categories: DEFAULT_CATEGORIES, reactions: REACTIONS });
       if (parts[1] !== 'games') throw new HttpError(404, 'not-found');
       if (parts.length === 2 && m === 'POST') return sendJson(res, 201, await createGame(req));
       // Guessing codes: after a handful of misses this address gets no more answers for a while.
@@ -606,6 +635,7 @@ export function createApp({
       if (action === 'end' && m === 'POST') return sendJson(res, 200, await end(game, me));
       if (action === 'photos' && parts.length === 5 && m === 'GET') return servePhoto(game, me, res, parts[4]);
       if (action === 'entries' && parts.length === 4 && m === 'POST') return sendJson(res, 201, await addEntry(game, me, req, url));
+      if (action === 'entries' && parts.length === 6 && parts[5] === 'react' && m === 'POST') return sendJson(res, 200, await react(game, me, parts[4], req));
       if (action === 'entries' && parts.length === 5 && m === 'DELETE') return sendJson(res, 200, await removeEntry(game, me, parts[4]));
       throw new HttpError(404, 'not-found');
     }

@@ -204,3 +204,11 @@ img.broken { visibility: visible; opacity: .3; }
 
 /* connection lost: the board may be stale */
 .net { position: sticky; top: 0; z-index: 15; padding: calc(env(safe-area-inset-top) + 8px) 12px 8px; background: var(--red); color: #2a0703; font-weight: 800; font-size: .9rem; text-align: center; }
+
+/* reactions */
+.reactions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.reaction { min-width: 52px; min-height: 44px; padding: 0 10px; border-radius: 999px; background: var(--card-2); border: 1.5px solid var(--line); font-size: 1.25rem; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.reaction.on { background: rgba(255, 182, 39, .16); border-color: var(--amber); }
+.reaction-n { font-size: .9rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tile-react { position: absolute; top: 5px; inset-inline-end: 5px; padding: 2px 7px; border-radius: 999px; background: rgba(0, 0, 0, .65); color: #fff; font-size: .72rem; font-weight: 800; }
+.sheet-backdrop.still, .sheet-backdrop.still .sheet-panel { animation: none; }

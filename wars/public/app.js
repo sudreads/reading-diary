@@ -387,11 +387,13 @@ async function openCreateSheet() {
 // ----- sheets -----
 
 function openSheet(...children) {
+  const replacing = sheetRoot.childElementCount > 0; // redrawing an open sheet: no entrance animation
   closeSheet();
   const panel = h('div', { class: 'sheet-panel', role: 'dialog', 'aria-modal': 'true' },
     h('button', { class: 'sheet-close', type: 'button', 'aria-label': 'סגירה', onclick: closeSheet }, '✕'),
     ...children);
   const backdrop = h('div', { class: 'sheet-backdrop', onclick: (e) => { if (e.target === backdrop) closeSheet(); } }, panel);
+  if (replacing) backdrop.classList.add('still');
   sheetRoot.append(backdrop);
   document.body.classList.add('sheet-open');
   return panel;
@@ -740,8 +742,34 @@ function galleryView(g) {
       const c = g.categories.find((x) => x.id === e.cat);
       return h('button', { class: 'tile', type: 'button', 'aria-label': `${p?.name || ''} ${c?.label || ''}`, onclick: () => openLightbox(g, e.id) },
         photoImg(e.thumb),
-        h('span', { class: 'tile-tag' }, `${c?.emoji || ''} ${p?.name || ''}`));
+        h('span', { class: 'tile-tag' }, `${c?.emoji || ''} ${p?.name || ''}`),
+        topReaction(e) ? h('span', { class: 'tile-react' }, topReaction(e)) : null);
     })) : h('p', { class: 'center-note' }, 'אין כאן תמונות עדיין'));
+}
+
+const REACTIONS = ['🔥', '😂', '👏', '🍻', '🤢'];
+
+function reactionBar(e, redraw) {
+  return h('div', { class: 'reactions' }, REACTIONS.map((emoji) => {
+    const r = e.reactions?.[emoji];
+    const btn = h('button', { class: `reaction ${r?.mine ? 'on' : ''}`, type: 'button', 'aria-pressed': String(Boolean(r?.mine)), 'aria-label': `${emoji} ${r?.n || 0}` },
+      h('span', {}, emoji), r ? h('span', { class: 'reaction-n' }, String(r.n)) : null);
+    btn.addEventListener('click', () => act(async () => {
+      const out = await gameApi('POST', `/entries/${e.id}/react`, { body: { emoji } });
+      const live = app.game?.entries.find((x) => x.id === e.id);
+      if (live) live.reactions = out.reactions; // show it now; the stream will confirm
+      redraw();
+    }, btn));
+    return btn;
+  }));
+}
+
+// The most-used reaction on a photo, for its tile in the grid.
+function topReaction(e) {
+  let best = null;
+  for (const [emoji, r] of Object.entries(e.reactions || {})) if (!best || r.n > best.n) best = { emoji, n: r.n };
+  const total = Object.values(e.reactions || {}).reduce((sum, r) => sum + r.n, 0);
+  return best ? `${best.emoji} ${total}` : '';
 }
 
 function openLightbox(g, entryId) {
@@ -751,7 +779,7 @@ function openLightbox(g, entryId) {
   if (i < 0) { list = g.entries.slice().reverse(); i = list.findIndex((e) => e.id === entryId); }
   if (i < 0) return;
   const draw = () => {
-    const e = list[i];
+    const e = app.game?.entries.find((x) => x.id === list[i].id) || list[i]; // the freshest copy we have
     const p = g.players.find((x) => x.id === e.playerId);
     const c = g.categories.find((x) => x.id === e.cat);
     const canDelete = g.me.isHost || (e.playerId === g.me.id && g.status === 'active');
@@ -759,6 +787,7 @@ function openLightbox(g, entryId) {
       h('div', { class: 'row' }, avatar(p), h('span', { class: 'row-main' }, h('span', {}, p?.name || '?'), h('span', { class: 'muted small' }, `${c?.emoji || ''} ${c?.label || ''} · ${clock(e.ts)}`))),
       photoImg(e.photo, { class: 'preview', alt: `${p?.name || ''}: ${c?.label || ''}`, eager: true }),
       e.note ? h('p', { class: 'note' }, e.note) : null,
+      reactionBar(e, draw),
       h('div', { class: 'pager' },
         h('button', { class: 'btn small ghost', type: 'button', disabled: i === 0, onclick: () => { i--; draw(); } }, '→ חדש יותר'),
         h('span', { class: 'muted small' }, `${i + 1} / ${list.length}`),

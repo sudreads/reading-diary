@@ -204,6 +204,16 @@ try {
   await yossi.getByText('לחיים! 🍻').waitFor();
   await yossi.waitForFunction(() => document.querySelector('.sheet-panel img.preview')?.naturalWidth > 320); // the full photo here
   assert.equal(await yossi.getByRole('button', { name: /למחוק/ }).count(), 0); // not his photo
+  // Reactions: tap, it counts; the photo's owner sees it arrive; tap again takes it back.
+  await yossi.getByRole('button', { name: '🔥 0' }).click();
+  await yossi.getByRole('button', { name: '🔥 1', pressed: true }).waitFor();
+  await yossi.getByRole('button', { name: '🍻 0' }).click();
+  await yossi.getByRole('button', { name: '🍻 1', pressed: true }).waitFor();
+  await yossi.getByRole('button', { name: '🔥 1' }).click();
+  await yossi.getByRole('button', { name: '🔥 0', pressed: false }).waitFor();
+  await dana.getByRole('tab', { name: /גלריה/ }).click();
+  await dana.locator('.tile-react', { hasText: '🍻 1' }).waitFor();
+  await dana.getByRole('tab', { name: 'משחק' }).click();
   await shot(yossi, '09-lightbox');
   await yossi.getByRole('button', { name: 'סגירה' }).click();
 
