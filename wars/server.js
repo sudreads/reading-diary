@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -534,18 +535,28 @@ export function createApp({
     // A player with many tabs keeps the newest ones; the oldest stream is closed.
     const mine = [...(streams.get(game.code) || [])].filter((c) => c.playerId === me.id);
     for (const old of mine.slice(0, Math.max(0, mine.length - MAX_STREAMS_PER_PLAYER + 1))) old.res.end();
+    // Every update carries the whole game, and on a phone that is mobile data: the stream is
+    // gzipped, flushed after each event, which makes it roughly ten times smaller.
+    const zipped = acceptsGzip(req);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store, no-transform', 'X-Content-Type-Options': 'nosniff',
-      Connection: 'keep-alive', 'X-Accel-Buffering': 'no',
+      Connection: 'keep-alive', 'X-Accel-Buffering': 'no', Vary: 'Accept-Encoding', ...(zipped ? { 'Content-Encoding': 'gzip' } : {}),
     });
-    res.write(`retry: 3000\ndata: ${JSON.stringify(view(game, me))}\n\n`);
-    const client = { res, playerId: me.id };
+    let out = res;
+    if (zipped) {
+      out = zlib.createGzip({ flush: zlib.constants.Z_SYNC_FLUSH });
+      out.on('error', () => res.destroy());
+      out.pipe(res);
+    }
+    out.write(`retry: 3000\ndata: ${JSON.stringify(view(game, me))}\n\n`);
+    const client = { res: out, playerId: me.id };
     if (!streams.has(game.code)) streams.set(game.code, new Set());
     streams.get(game.code).add(client);
     streamCount++;
-    const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
+    const ping = setInterval(() => out.write(': ping\n\n'), 25_000);
     res.on('close', () => {
       clearInterval(ping);
+      if (out !== res) out.destroy();
       streamCount--;
       const set = streams.get(game.code);
       if (set) { set.delete(client); if (!set.size) streams.delete(game.code); }
@@ -579,8 +590,11 @@ export function createApp({
     if (!full.startsWith(PUBLIC_DIR + path.sep)) throw new HttpError(404, 'not-found');
     let body;
     try { body = await fsp.readFile(full); } catch { throw new HttpError(404, 'not-found'); }
+    const zip = body.length > 1024 && /\.(html|js|css|svg|webmanifest)$/.test(rel) && acceptsGzip(res.req);
+    if (zip) body = zlib.gzipSync(body);
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(full)] || 'application/octet-stream', 'Content-Length': body.length,
+      Vary: 'Accept-Encoding', ...(zip ? { 'Content-Encoding': 'gzip' } : {}),
       'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY', 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Resource-Policy': 'same-origin',
       'Permissions-Policy': 'geolocation=(), microphone=(), payment=(), usb=()',
@@ -590,9 +604,16 @@ export function createApp({
     res.end(body);
   }
 
+  const acceptsGzip = (req) => /\bgzip\b/.test(String(req?.headers['accept-encoding'] || ''));
+
   function sendJson(res, status, value) {
-    const body = JSON.stringify(value);
-    res.writeHead(status, { 'Content-Type': MIME['.json'], 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+    let body = Buffer.from(JSON.stringify(value));
+    const zip = body.length > 1024 && acceptsGzip(res.req);
+    if (zip) body = zlib.gzipSync(body);
+    res.writeHead(status, {
+      'Content-Type': MIME['.json'], 'Content-Length': body.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+      Vary: 'Accept-Encoding', ...(zip ? { 'Content-Encoding': 'gzip' } : {}),
+    });
     res.end(body);
   }
 

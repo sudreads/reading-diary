@@ -760,3 +760,48 @@ test('reactions: tap to add, tap again to remove, counts only', async () => {
   await call('POST', `/api/games/${g.code}/end`, { token: g.token });
   assert.equal((await react(g.token, '👏')).status, 200);
 });
+
+test('mobile data: state and live updates are gzipped, and updates still arrive at once', async () => {
+  const http = await import('node:http');
+  const zlib = await import('node:zlib');
+  const g = await newGame();
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  for (let i = 0; i < 40; i++) assert.equal((await point(g.code, g.token)).status, 201);
+
+  // Raw bytes on the wire, with and without compression.
+  const raw = (pathname, encoding) => new Promise((resolve, reject) => {
+    const req = http.get(base + pathname, { headers: { Authorization: `Bearer ${g.token}`, 'Accept-Encoding': encoding } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+  });
+  const plain = await raw(`/api/games/${g.code}`, 'identity');
+  const zipped = await raw(`/api/games/${g.code}`, 'gzip, br');
+  assert.equal(plain.headers['content-encoding'], undefined);
+  assert.equal(zipped.headers['content-encoding'], 'gzip');
+  assert.equal(JSON.parse(zlib.gunzipSync(zipped.body)).entries.length, 40);
+  assert.equal(zipped.body.length * 3 < plain.body.length, true, `${zipped.body.length} vs ${plain.body.length}`);
+  assert.equal((await raw('/app.js', 'gzip')).headers['content-encoding'], 'gzip');
+  assert.equal((await raw('/icon-192.png', 'gzip')).headers['content-encoding'], undefined); // already compressed
+
+  // The stream: gzipped, and each event is flushed the moment it happens.
+  const events = [];
+  let bytes = 0;
+  const gunzip = zlib.createGunzip();
+  let text = '';
+  gunzip.on('data', (c) => { text += c; let cut; while ((cut = text.indexOf('\n\n')) >= 0) { const line = text.slice(0, cut).split('\n').find((l) => l.startsWith('data: ')); text = text.slice(cut + 2); if (line) events.push(JSON.parse(line.slice(6))); } });
+  const req = http.get(`${base}/api/games/${g.code}/events`, { headers: { Authorization: `Bearer ${g.token}`, 'Accept-Encoding': 'gzip' } }, (res) => {
+    assert.equal(res.headers['content-encoding'], 'gzip');
+    res.on('data', (c) => { bytes += c.length; gunzip.write(c); });
+  });
+  const until = async (test) => { for (let i = 0; i < 100 && !test(); i++) await new Promise((r) => setTimeout(r, 20)); assert.equal(test(), true); };
+  await until(() => events.length === 1);
+  const first = bytes;
+  assert.equal((await point(g.code, g.token)).status, 201);
+  await until(() => events.length === 2);
+  assert.equal(events[1].entries.length, 41);
+  assert.equal(bytes - first < plain.body.length / 3, true); // the second event is small on the wire too
+  req.destroy();
+});
