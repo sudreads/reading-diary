@@ -668,7 +668,12 @@ photoInput.addEventListener('change', async () => {
         raw: thumb ? new Blob([thumb, blob], { type: 'image/jpeg' }) : blob,
         headers: thumb ? { 'X-Thumb-Bytes': String(thumb.size) } : {},
       });
-    } catch (e) { send.textContent = 'לנסות שוב'; throw e; }
+    } catch (e) {
+      // A repeated photo will never go through: offer a new one, not a retry.
+      if (e.code === 'duplicate') send.hidden = true; // "another photo" below is the way on
+      else send.textContent = 'לנסות שוב';
+      throw e;
+    }
     closeSheet();
     toast(`\u200E+1 ${cat.emoji} ${cat.label}`, 'good');
     burst(cat.emoji);

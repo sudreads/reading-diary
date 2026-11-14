@@ -9,6 +9,9 @@ import { scores, ranking, categoryWinners } from '../public/score.js';
 
 // Smallest valid-looking images: only the magic bytes matter to the server.
 export const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 1)]);
+// The server refuses the same picture twice, so every upload in these tests is a slightly different one.
+let seq = 0;
+const fresh = (base = JPEG) => { const b = Buffer.from(base); b.writeUInt32BE(++seq, 12); return b; };
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
 
 let dataDir, app, base, clock;
@@ -51,7 +54,7 @@ async function joinAs(code, playerName) {
 }
 const state = async (code, token) => (await call('GET', `/api/games/${code}`, { token })).body;
 const tick = (ms = 4000) => { clock += ms; };
-async function point(code, token, cat = 'beer', photo = JPEG) {
+async function point(code, token, cat = 'beer', photo = fresh()) {
   tick();
   return call('POST', `/api/games/${code}/entries?cat=${cat}`, { token, raw: photo });
 }
@@ -424,7 +427,7 @@ test('attack: filling the disk - the storage quota stops uploads', async () => {
   let t = Date.now();
   const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
   await req('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
-  const up = () => req('POST', `/api/games/${g.code}/entries?cat=beer`, { token: g.token, raw: JPEG, headers: { 'Content-Type': 'image/jpeg' } });
+  const up = () => req('POST', `/api/games/${g.code}/entries?cat=beer`, { token: g.token, raw: fresh(), headers: { 'Content-Type': 'image/jpeg' } });
   const game = mini.games.get(g.code);
   const skipCooldown = () => { for (const p of game.players) p.lastEntryAt = 0; };
   assert.equal((await up()).status, 201); skipCooldown();
@@ -632,7 +635,7 @@ test('housekeeping: after a crash, stray photo files and photo-less points are c
   const game = first.games.get(g.code);
   for (let i = 0; i < 2; i++) {
     game.players[0].lastEntryAt = 0;
-    assert.equal((await fetch(`${url}/api/games/${g.code}/entries?cat=beer`, { method: 'POST', headers: { ...auth, 'Content-Type': 'image/jpeg' }, body: JPEG })).status, 201);
+    assert.equal((await fetch(`${url}/api/games/${g.code}/entries?cat=beer`, { method: 'POST', headers: { ...auth, 'Content-Type': 'image/jpeg' }, body: fresh() })).status, 201);
   }
   await new Promise((r) => first.server.close(r));
   await first.flush();
@@ -905,4 +908,32 @@ test('passing the crown: the boss hands over, the new boss rules, the old one pl
   const rematch = await call('POST', `/api/games/${g.code}/rematch`, { token: dana.token });
   assert.equal(rematch.status, 201);
   assert.equal((await state(rematch.body.code, rematch.body.token)).me.isHost, true);
+});
+
+test('cheating: the same picture twice is refused, from anyone in the game', async () => {
+  const g = await newGame();
+  const dana = await joinAs(g.code, 'דנה');
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { all: true } });
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  const photo = fresh();
+  assert.equal((await point(g.code, dana.token, 'beer', photo)).status, 201);
+  const again = await point(g.code, dana.token, 'water', photo); // other challenge, same picture
+  assert.equal(again.status, 409);
+  assert.equal(again.body.error, 'duplicate');
+  assert.equal((await point(g.code, g.token, 'beer', photo)).status, 409); // a friend's picture
+  // A different thumbnail in front changes nothing: the photo itself is compared.
+  tick();
+  const sneaky = await call('POST', `/api/games/${g.code}/entries?cat=beer`, { token: dana.token, raw: Buffer.concat([fresh(), photo]), headers: { 'X-Thumb-Bytes': String(JPEG.length) } });
+  assert.equal(sneaky.status, 409);
+  assert.equal((await state(g.code, g.token)).entries.length, 1);
+  // Once the original is deleted, the picture may be used again.
+  const id = (await state(g.code, g.token)).entries[0].id;
+  await call('DELETE', `/api/games/${g.code}/entries/${id}`, { token: dana.token });
+  assert.equal((await point(g.code, dana.token, 'beer', photo)).status, 201);
+  // Another game is another game.
+  const other = await newGame();
+  await call('POST', `/api/games/${other.code}/start`, { token: other.token, json: {} });
+  assert.equal((await point(other.code, other.token, 'beer', photo)).status, 201);
+  // Nothing about the hash leaks to players.
+  assert.equal(JSON.stringify(await state(g.code, g.token)).includes('hash'), false);
 });

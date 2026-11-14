@@ -36,15 +36,18 @@ async function phone(name) {
 }
 
 // A "photo": a screenshot of a big emoji on a coloured page.
-async function fakePhoto(emoji, color) {
+// Each one is a different picture (a small number in the corner): the server refuses repeats.
+let shotNo = 0;
+async function fakePhoto({ emoji, color }) {
   const page = await browser.newPage({ viewport: { width: 800, height: 1000 } });
-  await page.setContent(`<body style="margin:0;display:grid;place-items:center;height:100vh;background:${color};font-size:420px">${emoji}</body>`);
+  await page.setContent(`<body style="margin:0;display:grid;place-items:center;height:100vh;background:${color};font-size:420px;position:relative">${emoji}<span style="position:absolute;top:20px;left:20px;font:40px sans-serif;color:#0003">${++shotNo}</span></body>`);
   const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
   await page.close();
   return { name: 'photo.jpg', mimeType: 'image/jpeg', buffer };
 }
 
-async function addPoint(page, catLabel, photo, note) {
+async function addPoint(page, catLabel, kind, note) {
+  const photo = await fakePhoto(kind);
   clock += 4000;
   await page.getByRole('tab', { name: 'משחק' }).click();
   const chooser = page.waitForEvent('filechooser');
@@ -65,12 +68,20 @@ const deleteNewest = (page) => page.evaluate(async (gameCode) => {
 }, currentCode);
 let currentCode = '';
 
+async function addPointWith(page, catLabel, photo) {
+  const chooser = page.waitForEvent('filechooser');
+  await page.locator('.action', { hasText: catLabel }).click();
+  await (await chooser).setFiles(photo);
+  await page.getByRole('button', { name: /זה נחשב/ }).click();
+  await page.locator('.sheet-panel').waitFor({ state: 'detached' });
+}
+
 const shot = (page, name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
 
 try {
   const photos = {
-    beer: await fakePhoto('🍺', '#c98a1a'), food: await fakePhoto('🍔', '#8a3b1a'),
-    beach: await fakePhoto('🏖️', '#1a7fa8'), view: await fakePhoto('🌄', '#3a5a2a'),
+    beer: { emoji: '🍺', color: '#c98a1a' }, food: { emoji: '🍔', color: '#8a3b1a' },
+    beach: { emoji: '🏖️', color: '#1a7fa8' }, view: { emoji: '🌄', color: '#3a5a2a' },
   };
 
   // --- the boss creates a game ---
@@ -145,7 +156,7 @@ try {
     clock += 4000;
     const chooser = yossi.waitForEvent('filechooser');
     await yossi.locator('.action', { hasText: 'לשתות בירה' }).click();
-    await (await chooser).setFiles(photos.beer);
+    await (await chooser).setFiles(await fakePhoto(photos.beer));
     await yossi.locator('.sheet-panel img.preview').waitFor();
     await yossi.getByRole('button', { name: 'סגירה' }).click();
     assert.equal((await yossi.locator('.action', { hasText: 'לשתות בירה' }).locator('.action-count').textContent()).trim(), '0');
@@ -176,6 +187,24 @@ try {
     assert.equal(await deleteNewest(boss), 200); // the boss takes that extra photo back, so the story below is unchanged
     await yossi.getByRole('tab', { name: 'גלריה (6)' }).waitFor();
     await yossi.getByRole('tab', { name: 'משחק' }).click();
+  }
+
+  // --- the same picture twice is one point, not two ---
+  {
+    clock += 4000;
+    const repeat = await fakePhoto(photos.view);
+    await addPointWith(yossi, 'לצלם נוף', repeat);
+    clock += 4000;
+    const chooser = yossi.waitForEvent('filechooser');
+    await yossi.locator('.action', { hasText: 'לצלם נוף' }).click();
+    await (await chooser).setFiles(repeat);
+    await yossi.getByRole('button', { name: /זה נחשב/ }).click();
+    await yossi.locator('.toast.show.bad', { hasText: 'כבר עלתה' }).waitFor();
+    assert.equal(await yossi.getByRole('button', { name: /זה נחשב|לנסות שוב/ }).isVisible(), false);
+    await yossi.getByRole('button', { name: 'סגירה' }).click();
+    assert.equal((await yossi.locator('.action', { hasText: 'לצלם נוף' }).locator('.action-count').textContent()).trim(), '2');
+    assert.equal(await deleteNewest(yossi), 200); // keep the story below unchanged
+    await yossi.getByRole('tab', { name: 'גלריה (6)' }).waitFor();
   }
 
   // --- live board ---
@@ -252,7 +281,7 @@ try {
     clock += 4000;
     const chooser = late.waitForEvent('filechooser');
     await late.locator('.action', { hasText: 'להיות במסיבה' }).click();
-    await (await chooser).setFiles(photos.beach);
+    await (await chooser).setFiles(await fakePhoto(photos.beach));
     await late.getByRole('button', { name: /זה נחשב/ }).click();
     await late.getByRole('button', { name: 'לנסות שוב' }).waitFor(); // failed, the photo is still here
     await late.locator('.toast.show.bad').waitFor();

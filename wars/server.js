@@ -506,6 +506,9 @@ export function createApp({
       if (!ext) throw bad('no-photo', 'בלי תמונה זה לא נחשב');
       const thumbExt = thumbBytes ? sniffImage(thumbBuf) : null;
       if (thumbBytes && !thumbExt) throw bad('bad-thumb', 'בקשה לא תקינה');
+      // The same picture twice is one point, not two - whether it is your own again or a friend's.
+      const hash = crypto.createHash('sha256').update(buf).digest('base64url');
+      if (game.entries.some((e) => e.hash === hash)) throw new HttpError(409, 'duplicate', 'התמונה הזאת כבר עלתה במשחק. צריך תמונה חדשה');
       const note = cleanText(url.searchParams.get('note') || '', 80);
       const dir = path.join(photosDir, game.code);
       await fsp.mkdir(dir, { recursive: true });
@@ -521,7 +524,7 @@ export function createApp({
       }
       me.lastEntryAt = t;
       totalBytes += body.length;
-      const entry = { id: newId(8), playerId: me.id, cat, file, thumb, ts: t, note, size: body.length };
+      const entry = { id: newId(8), playerId: me.id, cat, file, thumb, hash, ts: t, note, size: body.length };
       game.entries.push(entry);
       await changed(game);
       return { ok: true, id: entry.id };
