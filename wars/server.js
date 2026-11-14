@@ -94,7 +94,7 @@ function parseCategories(input) {
 
 export function createApp({
   dataDir, now = () => Date.now(), createsPerHour = 20, joinsPerMinute = 30, joinsPerGameHour = 40, requestsPerMinute = 3000, playerRequestsPerMinute = 900, codeMisses = 15,
-  trustProxy = 0, quiet = true, maxGames = 3000, maxTotalBytes = 5 * 1024 ** 3,
+  trustProxy = 0, quiet = true, maxStreamBacklog = 1024 * 1024, maxGames = 3000, maxTotalBytes = 5 * 1024 ** 3,
 }) {
   const gamesDir = path.join(dataDir, 'games');
   const photosDir = path.join(dataDir, 'photos');
@@ -113,7 +113,11 @@ export function createApp({
     if (!file.endsWith('.json')) continue;
     try {
       const game = JSON.parse(fs.readFileSync(path.join(gamesDir, file), 'utf8'));
-      if (game && game.code) games.set(game.code, game);
+      // Only a file that is whole and is what its name says: anything else is left alone, unloaded.
+      const sound = game && `${game.code}.json` === file && /^[A-Z0-9]{4,8}$/.test(game.code)
+        && Array.isArray(game.players) && Array.isArray(game.entries) && Array.isArray(game.categories)
+        && game.players.some((p) => p.id === game.hostId);
+      if (sound) games.set(game.code, game);
     } catch { /* a half-written file from a crash: skip it, the rest still load */ }
   }
   // Bring the photo folders back in line with the games: after a crash a file can exist without
@@ -121,9 +125,9 @@ export function createApp({
   for (const code of fs.readdirSync(photosDir)) {
     const dir = path.join(photosDir, code);
     const game = games.get(code);
-    if (!game) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
+    if (!game || !fs.statSync(dir).isDirectory()) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
     const known = new Set(game.entries.flatMap((e) => [e.file, e.thumb]));
-    for (const file of fs.readdirSync(dir)) if (!known.has(file)) fs.rmSync(path.join(dir, file), { force: true });
+    for (const file of fs.readdirSync(dir)) if (!known.has(file)) fs.rmSync(path.join(dir, file), { recursive: true, force: true });
   }
   for (const game of games.values()) {
     const kept = [];
@@ -149,6 +153,7 @@ export function createApp({
       await fsp.rename(tmp, file);
     }).catch((e) => console.error('save failed', game.code, e.message));
     saving.set(game.code, next);
+    next.then(() => { if (saving.get(game.code) === next && !games.has(game.code)) saving.delete(game.code); });
     return next;
   }
 
@@ -211,8 +216,15 @@ export function createApp({
     for (const client of set) {
       const me = game.players.find((p) => p.id === client.playerId);
       if (!me) { client.res.end(); set.delete(client); continue; }
-      client.res.write(`data: ${JSON.stringify(view(game, me))}\n\n`);
+      push(client, `data: ${JSON.stringify(view(game, me))}\n\n`);
     }
+  }
+
+  // A client that stopped reading (dead phone, or someone doing it on purpose) must not make the
+  // server hoard its updates in memory: past a limit the connection is cut, and a live app reconnects.
+  function push(client, text) {
+    if (client.raw.writableLength + client.res.writableLength > maxStreamBacklog) { client.raw.destroy(); return; }
+    client.res.write(text);
   }
 
   function changed(game) { broadcast(game); return save(game); }
@@ -393,7 +405,13 @@ export function createApp({
     if (game.status === 'ended') throw new HttpError(409, 'ended', 'המשחק הזה כבר נגמר');
     if (game.players.filter((p) => p.status !== 'out').length >= MAX_PLAYERS) throw new HttpError(409, 'full', 'המשחק מלא');
     if (game.players.filter((p) => p.status === 'waiting').length >= MAX_WAITING) throw new HttpError(409, 'full', 'רשימת ההמתנה מלאה, בקשו מהבוס להכניס אנשים');
-    if (game.players.length >= MAX_PLAYER_RECORDS) throw new HttpError(409, 'full', 'המשחק מלא');
+    if (game.players.length >= MAX_PLAYER_RECORDS) {
+      // Forget people who came and went without leaving a photo, so a stream of drive-by joins
+      // can never lock real players out of a game.
+      const authors = new Set(game.entries.map((e) => e.playerId));
+      game.players = game.players.filter((p) => p.status !== 'out' || authors.has(p.id));
+      if (game.players.length >= MAX_PLAYER_RECORDS) throw new HttpError(409, 'full', 'המשחק מלא');
+    }
     const { player, token } = newPlayer(uniqueName(game, playerName), 'waiting');
     game.players.push(player);
     await changed(game);
@@ -549,11 +567,11 @@ export function createApp({
       out.pipe(res);
     }
     out.write(`retry: 3000\ndata: ${JSON.stringify(view(game, me))}\n\n`);
-    const client = { res: out, playerId: me.id };
+    const client = { res: out, raw: res, playerId: me.id };
     if (!streams.has(game.code)) streams.set(game.code, new Set());
     streams.get(game.code).add(client);
     streamCount++;
-    const ping = setInterval(() => out.write(': ping\n\n'), 25_000);
+    const ping = setInterval(() => push(client, ': ping\n\n'), 25_000);
     res.on('close', () => {
       clearInterval(ping);
       if (out !== res) out.destroy();
@@ -601,7 +619,7 @@ export function createApp({
       'Strict-Transport-Security': 'max-age=31536000; includeSubDomains', 'X-Robots-Tag': 'noindex',
       'Content-Security-Policy': "default-src 'none'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     });
-    res.end(body);
+    res.end(res.req.method === 'HEAD' ? undefined : body);
   }
 
   const acceptsGzip = (req) => /\bgzip\b/.test(String(req?.headers['accept-encoding'] || ''));

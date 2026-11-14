@@ -805,3 +805,73 @@ test('mobile data: state and live updates are gzipped, and updates still arrive 
   assert.equal(bytes - first < plain.body.length / 3, true); // the second event is small on the wire too
   req.destroy();
 });
+
+test('attack: a client that opens a live stream and never reads is cut off', async () => {
+  const net = await import('node:net');
+  const { mini, url, req, stop } = await miniServer({ maxStreamBacklog: 64 * 1024, playerRequestsPerMinute: 1e9, requestsPerMinute: 1e9 });
+  const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
+  await req('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  // A big game, so every update is large (no photos are read, only the list).
+  const game = mini.games.get(g.code);
+  for (let i = 0; i < 600; i++) game.entries.push({ id: `e${i}`, playerId: game.hostId, cat: 'beer', file: `f${i}.jpg`, ts: i, note: 'ת'.repeat(80), size: 0 });
+
+  const port = Number(new URL(url).port);
+  const socket = net.connect(port, '127.0.0.1');
+  await new Promise((r) => socket.once('connect', r));
+  socket.pause(); // never read a byte
+  socket.write(`GET /api/games/${g.code}/events HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAuthorization: Bearer ${g.token}\r\n\r\n`);
+  for (let i = 0; i < 100 && mini.stats().streams !== 1; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(mini.stats().streams, 1);
+
+  // Each reaction pushes the whole game to the stalled socket. The operating system buffers a few
+  // megabytes; after that the server must give up on it instead of hoarding updates in memory.
+  let rounds = 0;
+  while (mini.stats().streams === 1 && rounds < 2000) {
+    await req('POST', `/api/games/${g.code}/entries/e0/react`, { token: g.token, json: { emoji: '🔥' } });
+    rounds++;
+    if (rounds % 20 === 0) await new Promise((r) => setTimeout(r, 5));
+  }
+  assert.equal(mini.stats().streams, 0, `still connected after ${rounds} updates`);
+  socket.destroy();
+  await stop();
+});
+
+test('people who came and went without a photo do not fill a game up', async () => {
+  const { mini, req, stop } = await miniServer({ joinsPerGameHour: 1e9, joinsPerMinute: 1e9 });
+  const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
+  for (let i = 0; i < 320; i++) {
+    const j = await req('POST', `/api/games/${g.code}/join`, { json: { playerName: `עובר ${i}` } });
+    assert.equal(j.status, 201, `join ${i}`);
+    assert.equal((await req('POST', `/api/games/${g.code}/kick`, { token: g.token, json: { playerId: j.body.playerId } })).status, 200);
+  }
+  assert.equal(mini.games.get(g.code).players.length <= 300, true);
+  assert.equal((await req('POST', `/api/games/${g.code}/join`, { json: { playerName: 'אמיתי' } })).status, 201);
+  await stop();
+});
+
+test('startup: damaged or foreign files in the data folder are ignored, not fatal', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fw-bad-'));
+  fs.mkdirSync(path.join(dir, 'games'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'photos'), { recursive: true });
+  const write = (name, value) => fs.writeFileSync(path.join(dir, 'games', name), typeof value === 'string' ? value : JSON.stringify(value));
+  write('AAAAAA.json', { code: 'AAAAAA' }); // no players, no entries
+  write('BBBBBB.json', { code: 'CCCCCC', players: [], entries: [], categories: [] }); // name and code disagree
+  write('DDDDDD.json', 'null');
+  write('EEEEEE.json', { code: 'EEEEEE', players: [{ id: 'x' }], entries: [], categories: [], hostId: 'nobody' });
+  write('notes.txt', 'hello');
+  fs.writeFileSync(path.join(dir, 'photos', 'stray-file'), 'x');
+  const good = { code: 'GOODGM', name: 'ok', status: 'lobby', categories: [{ id: 'a', emoji: '⭐', label: 'a' }], hostId: 'h', createdAt: Date.now(), players: [{ id: 'h', name: 'בוס', status: 'in', tokenHash: 'x' }], entries: [] };
+  write('GOODGM.json', good);
+  const started = createApp({ dataDir: dir });
+  assert.deepEqual([...started.games.keys()], ['GOODGM']);
+  assert.equal(fs.existsSync(path.join(dir, 'photos', 'stray-file')), false);
+  started.server.close();
+  await started.flush();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('HEAD on the app shell answers without a body', async () => {
+  const res = await fetch(`${base}/`, { method: 'HEAD' });
+  assert.equal(res.status, 200);
+  assert.equal((await res.arrayBuffer()).byteLength, 0);
+});
