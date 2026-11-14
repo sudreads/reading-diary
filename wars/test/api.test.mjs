@@ -567,3 +567,18 @@ test('attack: one player hammering the API is slowed down without hurting the ot
   assert.equal((await req('GET', `/api/games/${g.code}`, { token: g.token })).status, 200); // the boss is fine
   await stop();
 });
+
+test('installable: the manifest and every icon it names are served', async () => {
+  const res = await fetch(`${base}/manifest.webmanifest`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /manifest\+json/);
+  const manifest = await res.json();
+  assert.equal(manifest.display, 'standalone');
+  assert.equal(manifest.icons.some((i) => i.sizes === '192x192' && i.type === 'image/png'), true);
+  assert.equal(manifest.icons.some((i) => i.sizes === '512x512' && i.purpose === 'maskable'), true);
+  for (const icon of [...manifest.icons.map((i) => i.src), 'apple-touch-icon.png']) {
+    const file = await fetch(`${base}/${icon}`);
+    assert.equal(file.status, 200, icon);
+    if (icon.endsWith('.png')) assert.equal(sniffImage(Buffer.from(await file.arrayBuffer())), 'png', icon);
+  }
+});
