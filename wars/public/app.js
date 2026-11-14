@@ -264,6 +264,7 @@ function announce(before, game) {
   if (before.me.status === 'waiting' && game.me.status === 'in') { toast('הבוס הכניס אותך! 🎉', 'good'); burst('🎉'); }
   if (before.status === 'lobby' && game.status === 'active') { toast('המשחק התחיל! 🚀', 'good'); burst('🚀'); }
   if (before.status === 'active' && game.status === 'ended') { toast('המשחק נגמר! 🏁', 'good'); burst('🏆'); }
+  if (!before.rematch && game.rematch && !game.me.isHost) toast('הבוס פתח משחק חוזר! 🔁', 'good');
   if (game.me.status !== 'in' || game.status !== 'active') return;
   const known = new Set(before.entries.map((e) => e.id));
   const fresh = game.entries.filter((e) => !known.has(e.id) && e.playerId !== game.me.id);
@@ -663,6 +664,24 @@ function boardView(g) {
 
 // ----- results -----
 
+// After the final whistle: the boss opens another round, the others walk straight into it.
+function rematchButton(g) {
+  const next = g.rematch;
+  if (next && app.sessions[next.code]) {
+    return h('button', { class: 'btn primary big', type: 'button', onclick: () => go(`#/g/${next.code}`) }, 'למשחק החוזר ←');
+  }
+  if (next && next.joined) return null; // joined from another phone
+  if (!next && !g.me.isHost) return null;
+  const btn = h('button', { class: 'btn primary big', type: 'button' }, g.me.isHost ? 'משחק חוזר 🔁' : 'להצטרף למשחק החוזר 🔁');
+  btn.addEventListener('click', () => act(async () => {
+    const out = await gameApi('POST', '/rematch');
+    app.sessions[out.code] = { token: out.token, lastSeen: Date.now() };
+    saveSessions();
+    go(`#/g/${out.code}`);
+  }, btn));
+  return btn;
+}
+
 function resultsView(g) {
   const rows = ranking(g, 'all');
   const winners = rows.filter((r) => r.place === 1 && r.count > 0);
@@ -674,6 +693,7 @@ function resultsView(g) {
       h('div', { class: 'big-emoji' }, winners.length ? '🏆' : '🤷'),
       h('h2', {}, winners.length ? winners.map((w) => w.player.name).join(' ו-') : 'אף אחד לא שיחק'),
       winners.length ? h('p', { class: 'muted' }, `${winners.length > 1 ? 'תיקו! ' : ''}${winners[0].count} נקודות`) : null),
+    rematchButton(g),
     podium.length > 1 ? h('section', { class: 'podium' }, order.map((r, i) => r ? h('div', { class: `step s${[2, 1, 3][i]}` },
       avatar(r.player, 'lg'), h('span', { class: 'step-name' }, r.player.name),
       h('div', { class: 'step-block' }, h('strong', {}, String(r.count)), h('span', {}, ['🥈', '🥇', '🥉'][i]))) : h('div', { class: 'step' }))) : null,

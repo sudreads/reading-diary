@@ -688,3 +688,47 @@ test('thumbnails: a small copy rides in front of the photo and is served to memb
   await app.flush();
   assert.equal(fs.readdirSync(path.join(dataDir, 'photos', g.code)).length, 1);
 });
+
+test('rematch: the boss opens another round and the old members walk straight in', async () => {
+  const g = await newGame({ categories: [{ id: 'pizza', emoji: '🍕', label: 'פיצה' }] });
+  const dana = await joinAs(g.code, 'דנה'), yossi = await joinAs(g.code, 'יוסי'), stranger = await joinAs(g.code, 'זר');
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: dana.playerId } });
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: yossi.playerId } });
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  const rematch = (token) => call('POST', `/api/games/${g.code}/rematch`, { token });
+
+  assert.equal((await rematch(g.token)).status, 409); // not over yet
+  await call('POST', `/api/games/${g.code}/kick`, { token: g.token, json: { playerId: yossi.playerId } });
+  await call('POST', `/api/games/${g.code}/end`, { token: g.token });
+  assert.equal((await rematch(dana.token)).status, 409); // only the boss opens it
+  assert.equal((await state(g.code, dana.token)).rematch, undefined);
+
+  const opened = await rematch(g.token);
+  assert.equal(opened.status, 201);
+  assert.notEqual(opened.body.code, g.code);
+  assert.equal((await rematch(g.token)).status, 409); // one rematch per game
+  const fresh = await state(opened.body.code, opened.body.token);
+  assert.deepEqual([fresh.status, fresh.name, fresh.me.isHost, fresh.me.name], ['lobby', 'ערב שישי', true, 'בוס']);
+  assert.deepEqual(fresh.categories, [{ id: 'pizza', emoji: '🍕', label: 'פיצה' }]);
+  assert.deepEqual(fresh.entries, []);
+
+  assert.deepEqual((await state(g.code, dana.token)).rematch, { code: opened.body.code, joined: false });
+  const in2 = await rematch(dana.token);
+  assert.equal(in2.status, 201);
+  const hers = await state(in2.body.code, in2.body.token);
+  assert.deepEqual([hers.me.status, hers.me.name, hers.me.isHost], ['in', 'דנה', false]); // no waiting list
+  assert.equal((await rematch(dana.token)).status, 409); // one ticket per player
+  assert.deepEqual((await state(g.code, dana.token)).rematch, { code: opened.body.code, joined: true });
+
+  // No ticket for the removed player, for the one who never got in, or for a token of the new game.
+  assert.equal((await rematch(yossi.token)).status, 403);
+  assert.equal((await rematch(stranger.token)).status, 403);
+  assert.equal((await rematch(in2.body.token)).status, 401);
+  assert.equal((await state(g.code, stranger.token)).rematch, undefined);
+  assert.deepEqual((await state(opened.body.code, opened.body.token)).players.map((p) => p.name), ['בוס', 'דנה']);
+
+  // Once the rematch itself is over it is no longer offered.
+  await call('POST', `/api/games/${opened.body.code}/start`, { token: opened.body.token, json: {} });
+  await call('POST', `/api/games/${opened.body.code}/end`, { token: opened.body.token });
+  assert.equal((await state(g.code, dana.token)).rematch, undefined);
+});

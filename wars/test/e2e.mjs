@@ -302,6 +302,26 @@ try {
   const tokens = await Promise.all([boss, dana, yossi, late].map((p) => p.evaluate(() => Object.values(JSON.parse(localStorage.getItem('fw.sessions'))).map((x) => x.token))));
   for (const token of tokens.flat()) assert.equal(urls.some((u) => u.includes(token)), false);
   assert.equal(urls.some((u) => /[?&]token=/.test(u)), false);
+  // --- rematch: the boss opens another round, dana walks straight in, same challenges ---
+  assert.equal(await dana.getByRole('button', { name: /משחק החוזר/ }).count(), 0); // nothing to join yet
+  await boss.getByRole('button', { name: /משחק חוזר/ }).click();
+  await boss.locator('.code').waitFor();
+  const code2 = (await boss.locator('.code').textContent()).trim();
+  assert.notEqual(code2, code);
+  await dana.getByRole('button', { name: /להצטרף למשחק החוזר/ }).click();
+  await dana.getByText('בקבוצה (2)').waitFor(); // in the lobby, not on the waiting list
+  await boss.getByText('בקבוצה (2)').waitFor();
+  assert.equal(await boss.locator('.waiting-card').count(), 0);
+  assert.equal(await dana.locator('.chip.static').count(), 6);
+  await shot(dana, '12-rematch-lobby');
+  await boss.getByRole('button', { name: /להתחיל את המשחק/ }).click();
+  await dana.locator('.action').first().waitFor();
+  assert.equal((await dana.locator('.stat strong').first().textContent()).trim(), '0'); // a clean slate
+  // Back in the old game, the button now leads to the rematch.
+  await dana.goto(`${base}/#/g/${code}`);
+  await dana.getByRole('button', { name: /למשחק החוזר/ }).click();
+  await dana.locator('.action').first().waitFor();
+
   assert.deepEqual(errors, []);
   console.log(`e2e ok - game ${code}, screenshots in ${SHOTS}`);
 } catch (e) {

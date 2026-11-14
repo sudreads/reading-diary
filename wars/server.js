@@ -174,6 +174,10 @@ export function createApp({
       hostId: game.hostId, me: { id: me.id, name: me.name, status: me.status, isHost: me.id === game.hostId },
       serverTime: now(),
     };
+    // A rematch that still exists is offered to the members of the finished game.
+    if (me.status === 'in' && game.nextCode && games.get(game.nextCode)?.status !== 'ended' && games.has(game.nextCode)) {
+      base.rematch = { code: game.nextCode, joined: Boolean(game.rematched?.[me.id]) };
+    }
     const pub = (p) => ({ id: p.id, name: p.name, status: p.status, joinedAt: p.joinedAt });
     if (me.status !== 'in') {
       const host = game.players.find((p) => p.id === game.hostId);
@@ -331,6 +335,40 @@ export function createApp({
     games.set(game.code, game);
     await save(game);
     return { code: game.code, token, playerId: player.id };
+  }
+
+  // Another round with the same people: the boss opens a fresh game with the same challenges,
+  // and everyone who was in the finished one walks straight in - no code, no waiting list.
+  // Being a member of the old game (proved by its token) is the ticket, once per player.
+  async function rematch(game, me, req) {
+    requireIn(me);
+    if (game.status !== 'ended') throw new HttpError(409, 'not-ended', 'המשחק עוד לא נגמר');
+    const next = game.nextCode ? games.get(game.nextCode) : null;
+    if (game.rematched?.[me.id]) throw new HttpError(409, 'already', 'כבר הצטרפת למשחק החוזר');
+    if (me.id === game.hostId) {
+      if (next) throw new HttpError(409, 'already', 'המשחק החוזר כבר נפתח');
+      limit(`create:${ipOf(req)}`, createsPerHour, 3600_000);
+      if (games.size >= maxGames) throw new HttpError(503, 'busy', 'יש יותר מדי משחקים כרגע, נסו מאוחר יותר');
+      const { player, token } = newPlayer(me.name, 'in');
+      const fresh = {
+        code: newCode(), name: game.name, status: 'lobby', categories: game.categories.map((c) => ({ ...c })), hostId: player.id,
+        createdAt: now(), startedAt: null, endedAt: null, endsAt: null, players: [player], entries: [],
+      };
+      games.set(fresh.code, fresh);
+      game.nextCode = fresh.code;
+      game.rematched = { [me.id]: true };
+      await save(fresh);
+      await changed(game);
+      return { code: fresh.code, token, playerId: player.id };
+    }
+    if (!next || next.status === 'ended') throw new HttpError(409, 'no-rematch', 'הבוס עוד לא פתח משחק חוזר');
+    if (next.players.filter((p) => p.status !== 'out').length >= MAX_PLAYERS) throw new HttpError(409, 'full', 'המשחק מלא');
+    const { player, token } = newPlayer(uniqueName(next, me.name), 'in');
+    next.players.push(player);
+    game.rematched[me.id] = true;
+    await changed(next);
+    await changed(game);
+    return { code: next.code, token, playerId: player.id };
   }
 
   async function joinGame(game, req) {
@@ -564,6 +602,7 @@ export function createApp({
       if (action === 'kick' && m === 'POST') return sendJson(res, 200, await kick(game, me, req));
       if (action === 'leave' && m === 'POST') return sendJson(res, 200, await leave(game, me));
       if (action === 'start' && m === 'POST') return sendJson(res, 200, await start(game, me, req));
+      if (action === 'rematch' && m === 'POST') return sendJson(res, 201, await rematch(game, me, req));
       if (action === 'end' && m === 'POST') return sendJson(res, 200, await end(game, me));
       if (action === 'photos' && parts.length === 5 && m === 'GET') return servePhoto(game, me, res, parts[4]);
       if (action === 'entries' && parts.length === 4 && m === 'POST') return sendJson(res, 201, await addEntry(game, me, req, url));
