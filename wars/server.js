@@ -14,6 +14,7 @@ const PUBLIC_DIR = path.join(HERE, 'public');
 
 // Every limit below exists so that one stranger cannot fill the disk, the memory or a game.
 const MAX_PHOTO_BYTES = 2 * 1024 * 1024; // the app sends ~200 KB
+const MAX_THUMB_BYTES = 80 * 1024; // the small copy the gallery grid shows
 const MAX_JSON_BYTES = 16 * 1024;
 const MAX_PLAYERS = 60; // members + waiting, per game
 const MAX_WAITING = 25;
@@ -118,14 +119,20 @@ export function createApp({
     const dir = path.join(photosDir, code);
     const game = games.get(code);
     if (!game) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
-    const known = new Set(game.entries.map((e) => e.file));
+    const known = new Set(game.entries.flatMap((e) => [e.file, e.thumb]));
     for (const file of fs.readdirSync(dir)) if (!known.has(file)) fs.rmSync(path.join(dir, file), { force: true });
   }
   for (const game of games.values()) {
     const kept = [];
     for (const e of game.entries) {
-      try { e.size = fs.statSync(path.join(photosDir, game.code, e.file)).size; kept.push(e); totalBytes += e.size; }
-      catch { /* the photo is gone: so is the point */ }
+      try { e.size = fs.statSync(path.join(photosDir, game.code, e.file)).size; }
+      catch { continue; } // the photo is gone: so is the point
+      if (e.thumb) {
+        try { e.size += fs.statSync(path.join(photosDir, game.code, e.thumb)).size; }
+        catch { delete e.thumb; } // the grid falls back to the full photo
+      }
+      kept.push(e);
+      totalBytes += e.size;
     }
     if (kept.length !== game.entries.length) { game.entries = kept; save(game); }
   }
@@ -177,7 +184,7 @@ export function createApp({
     return {
       ...base, players: visible.map(pub),
       waitingCount: game.players.filter((p) => p.status === 'waiting').length,
-      entries: game.entries.map((e) => ({ id: e.id, playerId: e.playerId, cat: e.cat, photo: `/api/games/${game.code}/photos/${e.file}`, ts: e.ts, note: e.note || '' })),
+      entries: game.entries.map((e) => ({ id: e.id, playerId: e.playerId, cat: e.cat, photo: `/api/games/${game.code}/photos/${e.file}`, thumb: `/api/games/${game.code}/photos/${e.thumb || e.file}`, ts: e.ts, note: e.note || '' })),
     };
   }
 
@@ -407,22 +414,32 @@ export function createApp({
     uploading.add(me.id);
     try {
       // The photo is the proof: no image, no point.
-      const buf = await readBody(req, MAX_PHOTO_BYTES);
+      // The app may put a small copy for the gallery grid in front of the photo, and says how
+      // many bytes it is. Both parts must be real images.
+      const thumbBytes = Number(req.headers['x-thumb-bytes'] || 0);
+      if (!Number.isInteger(thumbBytes) || thumbBytes < 0 || thumbBytes > MAX_THUMB_BYTES) throw bad('bad-thumb', 'בקשה לא תקינה');
+      const body = await readBody(req, MAX_PHOTO_BYTES + thumbBytes);
+      const thumbBuf = body.subarray(0, thumbBytes), buf = body.subarray(thumbBytes);
       const ext = sniffImage(buf);
       if (!ext) throw bad('no-photo', 'בלי תמונה זה לא נחשב');
+      const thumbExt = thumbBytes ? sniffImage(thumbBuf) : null;
+      if (thumbBytes && !thumbExt) throw bad('bad-thumb', 'בקשה לא תקינה');
       const note = cleanText(url.searchParams.get('note') || '', 80);
       const dir = path.join(photosDir, game.code);
       await fsp.mkdir(dir, { recursive: true });
       const file = `${newId(16)}.${ext}`;
+      const thumb = thumbExt ? `${newId(16)}.${thumbExt}` : undefined;
       await fsp.writeFile(path.join(dir, file), buf, { mode: 0o600 });
+      if (thumb) await fsp.writeFile(path.join(dir, thumb), thumbBuf, { mode: 0o600 });
       // The world may have moved while the upload was in flight.
       if (game.status !== 'active' || me.status !== 'in' || !games.has(game.code)) {
         await fsp.rm(path.join(dir, file), { force: true });
+        if (thumb) await fsp.rm(path.join(dir, thumb), { force: true });
         throw new HttpError(409, 'not-active', 'המשחק נגמר');
       }
       me.lastEntryAt = t;
-      totalBytes += buf.length;
-      const entry = { id: newId(8), playerId: me.id, cat, file, ts: t, note, size: buf.length };
+      totalBytes += body.length;
+      const entry = { id: newId(8), playerId: me.id, cat, file, thumb, ts: t, note, size: body.length };
       game.entries.push(entry);
       await changed(game);
       return { ok: true, id: entry.id };
@@ -440,6 +457,7 @@ export function createApp({
     game.entries.splice(i, 1);
     totalBytes -= entry.size || 0;
     await fsp.rm(path.join(photosDir, game.code, entry.file), { force: true });
+    if (entry.thumb) await fsp.rm(path.join(photosDir, game.code, entry.thumb), { force: true });
     await changed(game);
     return { ok: true };
   }
@@ -471,7 +489,7 @@ export function createApp({
   // and the file must be one of this game's entries. A copied link opens nothing.
   async function servePhoto(game, me, res, file) {
     requireIn(me);
-    if (!game.entries.some((e) => e.file === file)) throw new HttpError(404, 'not-found');
+    if (!game.entries.some((e) => e.file === file || e.thumb === file)) throw new HttpError(404, 'not-found');
     const full = path.join(photosDir, game.code, file);
     let stat;
     try { stat = await fsp.stat(full); } catch { throw new HttpError(404, 'not-found'); }

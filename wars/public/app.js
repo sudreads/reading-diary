@@ -33,8 +33,8 @@ function mount(...nodes) { main.append(...nodes.filter(Boolean)); }
 
 // ----- API -----
 
-async function api(method, path, { body, raw, token } = {}) {
-  const headers = {};
+async function api(method, path, { body, raw, token, headers: extra } = {}) {
+  const headers = { ...extra };
   if (token) headers.Authorization = `Bearer ${token}`;
   let payload;
   if (raw) { payload = raw; headers['Content-Type'] = raw.type || 'image/jpeg'; }
@@ -586,7 +586,7 @@ function feed(g, max) {
       const c = g.categories.find((x) => x.id === e.cat);
       return h('button', { class: 'row link', type: 'button', onclick: () => openLightbox(g, e.id) },
         avatar(p), h('span', { class: 'row-main' }, `${p?.name || '?'} ${c?.emoji || ''}`, h('span', { class: 'muted small' }, ` ${timeAgo(e.ts, serverNow())}`)),
-        photoImg(e.photo, { class: 'thumb' }));
+        photoImg(e.thumb, { class: 'thumb' }));
     })));
 }
 
@@ -608,8 +608,8 @@ photoInput.addEventListener('change', async () => {
   const g = app.game;
   const cat = g && g.categories.find((c) => c.id === app.pendingCat);
   if (!file || !cat) return;
-  let blob;
-  try { blob = await shrinkPhoto(file); }
+  let blob, thumb;
+  try { ({ blob, thumb } = await shrinkPhoto(file)); }
   catch { toast('לא הצלחנו לקרוא את התמונה. נסו תמונה אחרת', 'bad'); return; }
   const preview = h('img', { class: 'preview', src: URL.createObjectURL(blob), alt: 'התמונה שנבחרה', 'data-blob': '1' });
   const note = h('input', { class: 'input', maxLength: 80, placeholder: 'כיתוב (לא חובה)', enterKeyHint: 'send' });
@@ -617,7 +617,10 @@ photoInput.addEventListener('change', async () => {
   const upload = () => act(async () => {
     send.textContent = 'מעלה…';
     try {
-      await gameApi('POST', `/entries?cat=${encodeURIComponent(cat.id)}&note=${encodeURIComponent(note.value.trim())}`, { raw: blob });
+      await gameApi('POST', `/entries?cat=${encodeURIComponent(cat.id)}&note=${encodeURIComponent(note.value.trim())}`, {
+        raw: thumb ? new Blob([thumb, blob], { type: 'image/jpeg' }) : blob,
+        headers: thumb ? { 'X-Thumb-Bytes': String(thumb.size) } : {},
+      });
     } catch (e) { send.textContent = 'לנסות שוב'; throw e; }
     closeSheet();
     toast(`\u200E+1 ${cat.emoji} ${cat.label}`, 'good');
@@ -716,7 +719,7 @@ function galleryView(g) {
       const p = g.players.find((x) => x.id === e.playerId);
       const c = g.categories.find((x) => x.id === e.cat);
       return h('button', { class: 'tile', type: 'button', 'aria-label': `${p?.name || ''} ${c?.label || ''}`, onclick: () => openLightbox(g, e.id) },
-        photoImg(e.photo),
+        photoImg(e.thumb),
         h('span', { class: 'tile-tag' }, `${c?.emoji || ''} ${p?.name || ''}`));
     })) : h('p', { class: 'center-note' }, 'אין כאן תמונות עדיין'));
 }

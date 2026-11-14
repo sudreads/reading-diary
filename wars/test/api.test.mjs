@@ -656,3 +656,35 @@ test('housekeeping: after a crash, stray photo files and photo-less points are c
   await second.flush();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('thumbnails: a small copy rides in front of the photo and is served to members only', async () => {
+  const g = await newGame();
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  const up = (thumbBytes, body) => { tick(); return call('POST', `/api/games/${g.code}/entries?cat=beer`, { token: g.token, raw: body, headers: thumbBytes === null ? {} : { 'X-Thumb-Bytes': String(thumbBytes) } }); };
+  const small = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(20, 7)]);
+
+  assert.equal((await up(small.length, Buffer.concat([small, PNG]))).status, 201);
+  assert.equal((await up(null, JPEG)).status, 201); // an older app without thumbnails still works
+  // Lies about the split are refused: junk as the thumbnail, junk as the photo, silly sizes.
+  assert.equal((await up(10, Buffer.concat([Buffer.alloc(10, 1), JPEG]))).status, 400);
+  assert.equal((await up(small.length, Buffer.concat([small, Buffer.from('not a photo')]))).status, 400);
+  assert.equal((await up(small.length, small)).status, 400); // nothing after the thumbnail
+  for (const bad of ['-5', '1.5', 'abc', String(10 * 1024 * 1024)]) assert.equal((await up(bad, JPEG)).status, 400, bad);
+
+  const s = await state(g.code, g.token);
+  assert.equal(s.entries.length, 2);
+  const [withThumb, without] = s.entries;
+  assert.notEqual(withThumb.thumb, withThumb.photo);
+  assert.equal(without.thumb, without.photo);
+  const thumb = await call('GET', withThumb.thumb, { token: g.token });
+  assert.equal(Buffer.from(thumb.body).equals(small), true);
+  assert.equal(Buffer.from((await call('GET', withThumb.photo, { token: g.token })).body).equals(PNG), true);
+  assert.equal((await call('GET', withThumb.thumb)).status, 401);
+
+  // Deleting the point removes both files.
+  assert.equal((await call('DELETE', `/api/games/${g.code}/entries/${withThumb.id}`, { token: g.token })).status, 200);
+  assert.equal((await call('GET', withThumb.thumb, { token: g.token })).status, 404);
+  assert.equal((await call('GET', withThumb.photo, { token: g.token })).status, 404);
+  await app.flush();
+  assert.equal(fs.readdirSync(path.join(dataDir, 'photos', g.code)).length, 1);
+});

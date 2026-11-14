@@ -192,6 +192,9 @@ try {
   await yossi.locator('.tile').first().waitFor();
   assert.equal(await yossi.locator('.tile').count(), 6);
   await yossi.waitForFunction(() => [...document.querySelectorAll('.tile img')].every((i) => i.complete && i.naturalWidth > 0));
+  // The grid shows small copies (a few KB each), not the full photos.
+  const sizes = await yossi.evaluate(() => [...document.querySelectorAll('.tile img')].map((i) => Math.max(i.naturalWidth, i.naturalHeight)));
+  assert.equal(sizes.every((n) => n > 0 && n <= 320), true, String(sizes));
   await shot(yossi, '08-gallery');
   await yossi.locator('.chip', { hasText: 'לשתות בירה' }).click();
   assert.equal(await yossi.locator('.tile').count(), 3);
@@ -199,6 +202,7 @@ try {
   assert.equal(await yossi.locator('.tile').count(), 2);
   await yossi.locator('.tile').last().click();
   await yossi.getByText('לחיים! 🍻').waitFor();
+  await yossi.waitForFunction(() => document.querySelector('.sheet-panel img.preview')?.naturalWidth > 320); // the full photo here
   assert.equal(await yossi.getByRole('button', { name: /למחוק/ }).count(), 0); // not his photo
   await shot(yossi, '09-lightbox');
   await yossi.getByRole('button', { name: 'סגירה' }).click();
