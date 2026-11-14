@@ -215,7 +215,24 @@ try {
   await dana.locator('.tile-react', { hasText: '🍻 1' }).waitFor();
   await dana.getByRole('tab', { name: 'משחק' }).click();
   await shot(yossi, '09-lightbox');
+  // The phone's back button closes the photo and stays in the game.
+  await yossi.goBack();
+  await yossi.locator('.sheet-panel').waitFor({ state: 'detached' });
+  assert.equal(await yossi.locator('.tile').count(), 2);
+  assert.match(yossi.url(), new RegExp(`#/g/${code}$`));
+  // Opened and closed with the X: no leftover history entry, and focus returns to the tile.
+  const depth = await yossi.evaluate(() => history.length);
+  await yossi.locator('.tile').last().click();
+  await yossi.locator('.sheet-panel').waitFor();
+  assert.equal(await yossi.evaluate(() => document.activeElement.classList.contains('sheet-panel')), true);
   await yossi.getByRole('button', { name: 'סגירה' }).click();
+  await yossi.waitForFunction(() => !history.state?.sheet);
+  assert.equal(await yossi.evaluate(() => history.length), depth); // the sheet's entry was popped, none piled up
+  assert.equal(await yossi.evaluate(() => document.activeElement.classList.contains('tile')), true);
+  await yossi.locator('.tile').last().click(); // and it opens again
+  await yossi.getByText('לחיים! 🍻').waitFor();
+  await yossi.keyboard.press('Escape');
+  await yossi.locator('.sheet-panel').waitFor({ state: 'detached' });
 
   // --- a latecomer joins mid-game; the boss lets him in from the game screen ---
   const late = await phone('late');

@@ -75,14 +75,18 @@ async function act(fn, button) {
 function route() {
   const [, kind, rawCode] = location.hash.split('/');
   const code = (rawCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  closeSheet();
+  emptySheet();
   if (kind === 'g' && code && app.sessions[code]) return openGame(code);
   disconnect();
   app.game = null; app.code = null;
   renderHome(kind === 'join' || kind === 'g' ? code : '');
 }
 
-function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
+function go(hash) {
+  if (location.hash === hash) return route();
+  // Leaving from an open sheet: its history entry is replaced, not left behind for the back button.
+  if (history.state?.sheet) location.replace(hash); else location.hash = hash;
+}
 
 function disconnect() {
   if (app.stream) { app.stream.close(); app.stream = null; }
@@ -386,31 +390,52 @@ async function openCreateSheet() {
 
 // ----- sheets -----
 
+// A sheet gets its own history entry, so the phone's back button closes it instead of leaving
+// the game. Focus moves into the sheet and returns to where it was.
+let sheetOpener = null;
+let ownPops = 0; // back() calls we made ourselves and whose popstate is still on its way
+
 function openSheet(...children) {
   const replacing = sheetRoot.childElementCount > 0; // redrawing an open sheet: no entrance animation
-  closeSheet();
-  const panel = h('div', { class: 'sheet-panel', role: 'dialog', 'aria-modal': 'true' },
-    h('button', { class: 'sheet-close', type: 'button', 'aria-label': 'סגירה', onclick: closeSheet }, '✕'),
+  if (!replacing) sheetOpener = document.activeElement;
+  emptySheet();
+  const panel = h('div', { class: 'sheet-panel', role: 'dialog', 'aria-modal': 'true', tabIndex: -1 },
+    h('button', { class: 'sheet-close', type: 'button', 'aria-label': 'סגירה', onclick: () => closeSheet() }, '✕'),
     ...children);
   const backdrop = h('div', { class: 'sheet-backdrop', onclick: (e) => { if (e.target === backdrop) closeSheet(); } }, panel);
   if (replacing) backdrop.classList.add('still');
   sheetRoot.append(backdrop);
   document.body.classList.add('sheet-open');
+  if (!history.state?.sheet) history.pushState({ sheet: true }, '');
+  if (!replacing) panel.focus({ preventScroll: true });
   return panel;
 }
 
-function closeSheet() {
+function emptySheet() {
   for (const img of sheetRoot.querySelectorAll('img[data-blob]')) URL.revokeObjectURL(img.src);
   clear(sheetRoot);
   document.body.classList.remove('sheet-open');
 }
+
+function closeSheet() {
+  const wasOpen = sheetRoot.childElementCount > 0;
+  emptySheet();
+  if (history.state?.sheet) { ownPops++; history.back(); }
+  if (wasOpen && sheetOpener?.isConnected) sheetOpener.focus({ preventScroll: true });
+  sheetOpener = null;
+}
+
+addEventListener('popstate', () => {
+  if (ownPops > 0) { ownPops--; return; }
+  emptySheet(); // the back button
+});
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
 
 function confirmSheet(title, text, okLabel, onOk) {
   const ok = h('button', { class: 'btn danger', type: 'button' }, okLabel);
   ok.addEventListener('click', () => act(async () => { await onOk(); closeSheet(); }, ok));
-  openSheet(h('h2', {}, title), h('p', { class: 'muted' }, text), ok, h('button', { class: 'btn ghost', type: 'button', onclick: closeSheet }, 'ביטול'));
+  openSheet(h('h2', {}, title), h('p', { class: 'muted' }, text), ok, h('button', { class: 'btn ghost', type: 'button', onclick: () => closeSheet() }, 'ביטול'));
 }
 
 // ----- effects -----

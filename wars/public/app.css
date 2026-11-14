@@ -212,3 +212,4 @@ img.broken { visibility: visible; opacity: .3; }
 .reaction-n { font-size: .9rem; font-weight: 800; font-variant-numeric: tabular-nums; }
 .tile-react { position: absolute; top: 5px; inset-inline-end: 5px; padding: 2px 7px; border-radius: 999px; background: rgba(0, 0, 0, .65); color: #fff; font-size: .72rem; font-weight: 800; }
 .sheet-backdrop.still, .sheet-backdrop.still .sheet-panel { animation: none; }
+.sheet-panel:focus { outline: none; }
