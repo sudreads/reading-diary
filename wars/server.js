@@ -24,7 +24,10 @@ const MAX_STREAMS_PER_PLAYER = 4;
 const MAX_STREAMS = 2000;
 const MAX_CATEGORIES = 12;
 const ENTRY_COOLDOWN_MS = 3000;
-const GAME_TTL_MS = 30 * 24 * 3600 * 1000;
+const DAY_MS = 24 * 3600 * 1000;
+const GAME_TTL_MS = 30 * DAY_MS; // a finished game and its photos are kept this long
+const LOBBY_TTL_MS = 7 * DAY_MS; // a game nobody ever started
+const MAX_GAME_MS = 14 * DAY_MS; // a game nobody ever ended is ended for them
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const CODE_LENGTH = 6; // 32^6 = a billion codes; guesses are rate-limited as well
 
@@ -109,7 +112,23 @@ export function createApp({
       if (game && game.code) games.set(game.code, game);
     } catch { /* a half-written file from a crash: skip it, the rest still load */ }
   }
-  for (const game of games.values()) for (const e of game.entries) totalBytes += e.size || 0;
+  // Bring the photo folders back in line with the games: after a crash a file can exist without
+  // its entry (or the other way round), and left alone those would eat the disk for ever.
+  for (const code of fs.readdirSync(photosDir)) {
+    const dir = path.join(photosDir, code);
+    const game = games.get(code);
+    if (!game) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
+    const known = new Set(game.entries.map((e) => e.file));
+    for (const file of fs.readdirSync(dir)) if (!known.has(file)) fs.rmSync(path.join(dir, file), { force: true });
+  }
+  for (const game of games.values()) {
+    const kept = [];
+    for (const e of game.entries) {
+      try { e.size = fs.statSync(path.join(photosDir, game.code, e.file)).size; kept.push(e); totalBytes += e.size; }
+      catch { /* the photo is gone: so is the point */ }
+    }
+    if (kept.length !== game.entries.length) { game.entries = kept; save(game); }
+  }
 
   function save(game) {
     const file = path.join(gamesDir, `${game.code}.json`);
@@ -187,7 +206,10 @@ export function createApp({
     const t = now();
     for (const game of [...games.values()]) {
       if (endIfDue(game)) changed(game);
-      if (t - (game.endedAt || game.createdAt) > GAME_TTL_MS) removeGame(game);
+      // The boss walked away: nobody else can end the game, so time does.
+      if (game.status === 'active' && t - game.startedAt > MAX_GAME_MS) { game.status = 'ended'; game.endedAt = t; changed(game); }
+      if (game.status === 'lobby' && t - game.createdAt > LOBBY_TTL_MS) removeGame(game);
+      else if (game.status === 'ended' && t - game.endedAt > GAME_TTL_MS) removeGame(game);
     }
     for (const [key, slot] of rate) if (slot.resetAt <= t) rate.delete(key);
   }

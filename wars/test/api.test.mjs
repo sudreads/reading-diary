@@ -582,3 +582,77 @@ test('installable: the manifest and every icon it names are served', async () =>
     if (icon.endsWith('.png')) assert.equal(sniffImage(Buffer.from(await file.arrayBuffer())), 'png', icon);
   }
 });
+
+test('housekeeping: abandoned games end and old ones are deleted with their photos', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fw-old-'));
+  let t = Date.now();
+  const old = createApp({ dataDir: dir, now: () => t });
+  await new Promise((r) => old.server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${old.server.address().port}`;
+  const post = async (p, token, body, type = 'application/json') => {
+    const res = await fetch(url + p, { method: 'POST', headers: { 'Content-Type': type, ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body });
+    return res.json();
+  };
+  const DAY = 24 * 3600_000;
+  const lobby = await post('/api/games', null, JSON.stringify({ playerName: 'a' }));
+  const played = await post('/api/games', null, JSON.stringify({ playerName: 'b' }));
+  await post(`/api/games/${played.code}/start`, played.token, '{}');
+  t += 4000;
+  await post(`/api/games/${played.code}/entries?cat=beer`, played.token, JPEG, 'image/jpeg');
+  const photoDir = path.join(dir, 'photos', played.code);
+  assert.equal(fs.readdirSync(photoDir).length, 1);
+
+  t += 6 * DAY; old.sweep();
+  assert.deepEqual([old.games.has(lobby.code), old.games.get(played.code).status], [true, 'active']);
+  t += 2 * DAY; old.sweep(); // 8 days: the lobby nobody started is gone
+  assert.equal(old.games.has(lobby.code), false);
+  t += 7 * DAY; old.sweep(); // 15 days: the game nobody ended is over
+  assert.equal(old.games.get(played.code).status, 'ended');
+  assert.equal(fs.readdirSync(photoDir).length, 1); // results and photos stay for a month
+  t += 29 * DAY; old.sweep();
+  assert.equal(old.games.has(played.code), true);
+  t += 2 * DAY; old.sweep();
+  assert.equal(old.games.has(played.code), false);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(fs.existsSync(photoDir), false);
+  assert.equal(old.stats().totalBytes, 0);
+  await new Promise((r) => old.server.close(r));
+  await old.flush();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('housekeeping: after a crash, stray photo files and photo-less points are cleaned up', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fw-crash-'));
+  const first = createApp({ dataDir: dir });
+  await new Promise((r) => first.server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${first.server.address().port}`;
+  const g = await (await fetch(`${url}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playerName: 'a' }) })).json();
+  const auth = { Authorization: `Bearer ${g.token}` };
+  await fetch(`${url}/api/games/${g.code}/start`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: '{}' });
+  const game = first.games.get(g.code);
+  for (let i = 0; i < 2; i++) {
+    game.players[0].lastEntryAt = 0;
+    assert.equal((await fetch(`${url}/api/games/${g.code}/entries?cat=beer`, { method: 'POST', headers: { ...auth, 'Content-Type': 'image/jpeg' }, body: JPEG })).status, 201);
+  }
+  await new Promise((r) => first.server.close(r));
+  await first.flush();
+
+  // The mess a crash can leave behind:
+  const photoDir = path.join(dir, 'photos', g.code);
+  fs.writeFileSync(path.join(photoDir, 'stray.jpg'), JPEG); // written, never recorded
+  fs.rmSync(path.join(photoDir, game.entries[0].file)); // recorded, file lost
+  fs.mkdirSync(path.join(dir, 'photos', 'GHOST9'));
+  fs.writeFileSync(path.join(dir, 'photos', 'GHOST9', 'x.jpg'), JPEG); // a game that no longer exists
+  fs.writeFileSync(path.join(dir, 'games', 'BROKEN.json'), '{"code":"BRO'); // half-written
+
+  const second = createApp({ dataDir: dir });
+  const again = second.games.get(g.code);
+  assert.equal(again.entries.length, 1);
+  assert.deepEqual(fs.readdirSync(photoDir), [again.entries[0].file]);
+  assert.equal(fs.existsSync(path.join(dir, 'photos', 'GHOST9')), false);
+  assert.equal(second.stats().totalBytes, JPEG.length);
+  assert.equal(second.games.size, 1);
+  second.server.close();
+  await second.flush();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
