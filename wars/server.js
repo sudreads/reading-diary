@@ -439,6 +439,19 @@ export function createApp({
     return { ok: true };
   }
 
+  // The boss is leaving the party (or their battery is): hand the crown to someone in the group,
+  // so the waiting list, the end of the game and the rematch do not die with one phone.
+  async function transfer(game, me, req) {
+    requireHost(game, me);
+    const body = await readJson(req);
+    const target = game.players.find((p) => p.id === body.playerId);
+    if (!target || target.status !== 'in') throw new HttpError(404, 'no-player', 'השחקן לא נמצא בקבוצה');
+    if (target.id === me.id) throw bad('already-boss', 'אתה כבר הבוס');
+    game.hostId = target.id;
+    await changed(game);
+    return { ok: true };
+  }
+
   async function leave(game, me) {
     if (me.id === game.hostId) throw bad('host-stays', 'הבוס לא יכול לעזוב. אפשר לסיים את המשחק');
     me.status = 'out';
@@ -668,6 +681,7 @@ export function createApp({
       if (action === 'events' && m === 'GET') return events(game, me, req, res);
       if (action === 'approve' && m === 'POST') return sendJson(res, 200, await approve(game, me, req));
       if (action === 'kick' && m === 'POST') return sendJson(res, 200, await kick(game, me, req));
+      if (action === 'transfer' && m === 'POST') return sendJson(res, 200, await transfer(game, me, req));
       if (action === 'leave' && m === 'POST') return sendJson(res, 200, await leave(game, me));
       if (action === 'start' && m === 'POST') return sendJson(res, 200, await start(game, me, req));
       if (action === 'rematch' && m === 'POST') return sendJson(res, 201, await rematch(game, me, req));

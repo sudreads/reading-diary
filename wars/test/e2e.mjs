@@ -299,6 +299,16 @@ try {
   await boss.getByRole('button', { name: 'למחוק', exact: true }).click();
   await boss.getByRole('tab', { name: 'גלריה (5)' }).waitFor();
 
+  // --- the boss hands the crown to dana and takes it back ---
+  await boss.getByRole('tab', { name: 'משחק' }).click();
+  await boss.getByRole('button', { name: /להעביר את הכתר/ }).first().click();
+  await boss.getByRole('button', { name: 'להעביר את הכתר לדנה' }).click();
+  await dana.getByRole('button', { name: /לסיים את המשחק/ }).waitFor(); // dana now has the boss controls
+  assert.equal(await boss.getByRole('button', { name: /לסיים את המשחק/ }).count(), 0);
+  await dana.getByRole('button', { name: /להעביר את הכתר/ }).click();
+  await dana.getByRole('button', { name: 'להעביר את הכתר לשירן' }).click();
+  await boss.getByRole('button', { name: /לסיים את המשחק/ }).waitFor();
+
   // --- reload keeps you in the game ---
   await dana.reload();
   await dana.locator('.action').first().waitFor();

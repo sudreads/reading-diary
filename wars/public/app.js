@@ -266,6 +266,7 @@ main.addEventListener('change', (e) => { if (e.target.tagName === 'SELECT') setT
 // Toasts for things that happened while you were looking.
 function announce(before, game) {
   if (before.me.status === 'waiting' && game.me.status === 'in') { toast('הבוס הכניס אותך! 🎉', 'good'); burst('🎉'); }
+  if (!before.me.isHost && game.me.isHost) { toast('קיבלת את הכתר! אתה הבוס עכשיו 👑', 'good'); burst('👑'); }
   if (before.status === 'lobby' && game.status === 'active') { toast('המשחק התחיל! 🚀', 'good'); burst('🚀'); }
   if (before.status === 'active' && game.status === 'ended') { toast('המשחק נגמר! 🏁', 'good'); burst('🏆'); }
   if (!before.rematch && game.rematch && !game.me.isHost) toast('הבוס פתח משחק חוזר! 🔁', 'good');
@@ -547,6 +548,24 @@ function memberRow(g, p) {
     p.id === g.hostId ? h('span', { class: 'tag boss' }, '👑 הבוס') : null, kickBtn);
 }
 
+// Hand the crown to someone else in the group: the boss may have to leave before the game ends.
+function crownButton(g) {
+  const others = g.players.filter((p) => p.status === 'in' && p.id !== g.me.id);
+  if (!g.me.isHost || !others.length) return null;
+  return h('button', { class: 'btn ghost', type: 'button', onclick: () => openSheet(
+    h('h2', {}, 'להעביר את הכתר 👑'),
+    h('p', { class: 'muted' }, 'הבוס החדש יכניס אנשים, יסיים את המשחק ויפתח משחק חוזר. אתה נשאר במשחק כשחקן רגיל.'),
+    h('div', { class: 'list' }, others.map((p) => {
+      const pick = h('button', { class: 'row link', type: 'button', 'aria-label': `להעביר את הכתר ל${p.name}` }, avatar(p), h('span', { class: 'row-main' }, p.name), h('span', { class: 'tag boss' }, '👑'));
+      pick.addEventListener('click', () => act(async () => {
+        await gameApi('POST', '/transfer', { body: { playerId: p.id } });
+        closeSheet();
+        toast(`${p.name} הבוס עכשיו 👑`, 'good');
+      }, pick));
+      return pick;
+    }))) }, 'להעביר את הכתר 👑');
+}
+
 function lobbyView(g) {
   const members = g.players.filter((p) => p.status === 'in');
   const parts = [
@@ -571,7 +590,7 @@ function lobbyView(g) {
     const startBtn = h('button', { class: 'btn primary big', type: 'button' }, 'להתחיל את המשחק 🚀');
     startBtn.addEventListener('click', () => act(() => gameApi('POST', '/start', { body: { hours: Number(hours.value) } }), startBtn));
     parts.push(h('section', { class: 'card' },
-      h('label', { class: 'label', for: 'hours' }, 'כמה זמן משחקים?'), hours, startBtn,
+      h('label', { class: 'label', for: 'hours' }, 'כמה זמן משחקים?'), hours, startBtn, crownButton(g),
       g.waitingCount ? h('p', { class: 'muted small' }, 'יש עוד אנשים ברשימת ההמתנה. אפשר להכניס אותם גם אחרי שמתחילים.') : null));
   } else {
     parts.push(h('p', { class: 'center-note' }, h('span', { class: 'pulse' }, '⏳'), ' מחכים שהבוס יתחיל את המשחק…'));
@@ -601,7 +620,7 @@ function playView(g) {
         h('span', { class: 'action-label' }, c.label),
         h('span', { class: 'action-count' }, String(mine.byCat[c.id] || 0))))),
     feed(g, 6),
-    endBtn);
+    endBtn, crownButton(g));
 }
 
 function feed(g, max) {

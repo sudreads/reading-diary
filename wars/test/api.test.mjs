@@ -875,3 +875,34 @@ test('HEAD on the app shell answers without a body', async () => {
   assert.equal(res.status, 200);
   assert.equal((await res.arrayBuffer()).byteLength, 0);
 });
+
+test('passing the crown: the boss hands over, the new boss rules, the old one plays on', async () => {
+  const g = await newGame();
+  const dana = await joinAs(g.code, 'דנה'), waiting = await joinAs(g.code, 'מחכה');
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: dana.playerId } });
+  const transfer = (token, playerId) => call('POST', `/api/games/${g.code}/transfer`, { token, json: { playerId } });
+
+  assert.equal((await transfer(dana.token, dana.playerId)).status, 403); // only the boss
+  assert.equal((await transfer(g.token, waiting.playerId)).status, 404); // not in the group yet
+  assert.equal((await transfer(g.token, 'nobody')).status, 404);
+  assert.equal((await transfer(g.token, g.playerId)).status, 400);
+
+  assert.equal((await transfer(g.token, dana.playerId)).status, 200);
+  const s = await state(g.code, dana.token);
+  assert.deepEqual([s.hostId, s.me.isHost], [dana.playerId, true]);
+  assert.equal(s.waitingCount, 1); // and now she sees the waiting list
+  assert.equal((await state(g.code, g.token)).me.isHost, false);
+
+  // The old boss lost every power, the new one has them all.
+  assert.equal((await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} })).status, 403);
+  assert.equal((await call('POST', `/api/games/${g.code}/kick`, { token: g.token, json: { playerId: dana.playerId } })).status, 403);
+  assert.equal((await call('POST', `/api/games/${g.code}/approve`, { token: dana.token, json: { all: true } })).status, 200);
+  assert.equal((await call('POST', `/api/games/${g.code}/start`, { token: dana.token, json: {} })).status, 200);
+  assert.equal((await point(g.code, g.token)).status, 201); // still a player
+  assert.equal((await call('POST', `/api/games/${g.code}/leave`, { token: g.token })).status, 200); // and now free to go
+  assert.equal((await call('POST', `/api/games/${g.code}/leave`, { token: dana.token })).status, 400); // the boss cannot
+  assert.equal((await call('POST', `/api/games/${g.code}/end`, { token: dana.token })).status, 200);
+  const rematch = await call('POST', `/api/games/${g.code}/rematch`, { token: dana.token });
+  assert.equal(rematch.status, 201);
+  assert.equal((await state(rematch.body.code, rematch.body.token)).me.isHost, true);
+});
