@@ -333,14 +333,23 @@ function renderHome(joinCode = '') {
     ),
     recent.length ? h('section', { class: 'card' },
       h('div', { class: 'label' }, 'המשחקים שלי'),
-      h('div', { class: 'list' }, recent.map(([code, s]) => h('button', { class: 'row link', type: 'button', onclick: () => go(`#/g/${code}`) },
-        h('span', { class: 'row-main' }, s.gameName || code),
-        h('span', { class: `tag ${s.status || ''}` }, { lobby: 'בהמתנה', active: 'פעיל', ended: 'נגמר' }[s.status] || code),
+      h('div', { class: 'list' }, recent.map(([code, s]) => h('div', { class: 'row' },
+        h('button', { class: 'row link', type: 'button', onclick: () => go(`#/g/${code}`) },
+          h('span', { class: 'row-main' }, s.gameName || code),
+          h('span', { class: `tag ${s.status || ''}` }, { lobby: 'בהמתנה', active: 'פעיל', ended: 'נגמר' }[s.status] || code)),
+        h('button', { class: 'btn small ghost', type: 'button', 'aria-label': `להסיר את ${s.gameName || code} מהרשימה`, onclick: () => forgetFromList(code, s) }, '✕'),
       ))),
     ) : null,
     h('p', { class: 'foot' }, 'שותים באחריות 🙏'),
   );
   if (!app.name) nameInput.focus(); else if (joinCode) joinBtn.focus();
+}
+
+// Removing a game from this phone's list also drops this phone's seat in it: say so unless it is over.
+function forgetFromList(code, s) {
+  const drop = () => { forgetSession(code); renderHome(); };
+  if (s.status === 'ended') return drop();
+  confirmSheet('להסיר מהרשימה?', 'המשחק עוד לא נגמר. אחרי ההסרה הטלפון הזה כבר לא יהיה חלק ממנו, ואי אפשר לחזור אליו.', 'להסיר', async () => drop());
 }
 
 // ----- create -----
@@ -465,7 +474,7 @@ function render() {
   queueMicrotask(() => main.querySelectorAll('.chips.scroll').forEach((el, i) => { if (chipScroll[i]) el.scrollLeft = chipScroll[i]; }));
   if (!g) { mount(h('div', { class: 'center' }, h('div', { class: 'spinner' }), h('p', { class: 'muted' }, 'מתחברים למשחק…'))); return; }
   mount(header(g));
-  if (g.me.status === 'out') return mount(outView());
+  if (g.me.status === 'out') return mount(outView(g));
   if (g.me.status === 'waiting') return mount(waitingView(g));
   if (g.status === 'lobby') return mount(lobbyView(g));
   if (g.me.isHost) mount(waitingList(g));
@@ -505,10 +514,16 @@ function avatar(player, extra = '') {
   return el;
 }
 
-function outView() {
+function outView(g) {
+  const [emoji, title, text] = {
+    rejected: ['🚪', 'הבוס לא אישר את ההצטרפות', 'אפשר לבקש ממנו קוד שוב, או להקים משחק משלך.'],
+    removed: ['👋', 'הבוס הוציא אותך מהמשחק', 'התמונות שהעלית נשארות בגלריה של הקבוצה.'],
+    left: ['👋', 'יצאת מהמשחק', ''],
+  }[g.me.outReason] || ['👋', 'יצאת מהמשחק', ''];
   return h('section', { class: 'center' },
-    h('div', { class: 'big-emoji' }, '👋'),
-    h('h2', {}, 'יצאת מהמשחק'),
+    h('div', { class: 'big-emoji' }, emoji),
+    h('h2', {}, title),
+    text ? h('p', { class: 'muted' }, text) : null,
     h('button', { class: 'btn primary', type: 'button', onclick: () => { forgetSession(app.code); go('#/'); } }, 'חזרה לדף הבית'));
 }
 

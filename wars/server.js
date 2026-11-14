@@ -179,7 +179,7 @@ export function createApp({
     const base = {
       code: game.code, name: game.name, status: game.status, categories: game.categories,
       createdAt: game.createdAt, startedAt: game.startedAt, endedAt: game.endedAt, endsAt: game.endsAt,
-      hostId: game.hostId, me: { id: me.id, name: me.name, status: me.status, isHost: me.id === game.hostId },
+      hostId: game.hostId, me: { id: me.id, name: me.name, status: me.status, isHost: me.id === game.hostId, ...(me.status === 'out' ? { outReason: me.outReason || 'removed' } : {}) },
       serverTime: now(),
     };
     // A rematch that still exists is offered to the members of the finished game.
@@ -434,6 +434,7 @@ export function createApp({
     const target = game.players.find((p) => p.id === body.playerId);
     if (!target || target.status === 'out') throw new HttpError(404, 'no-player', 'השחקן לא נמצא');
     if (target.id === game.hostId) throw bad('host-stays', 'הבוס לא יכול להעיף את עצמו');
+    target.outReason = target.status === 'waiting' ? 'rejected' : 'removed';
     target.status = 'out';
     await changed(game); // their stream gets one last update saying "out"; later ones carry nothing private
     return { ok: true };
@@ -454,6 +455,7 @@ export function createApp({
 
   async function leave(game, me) {
     if (me.id === game.hostId) throw bad('host-stays', 'הבוס לא יכול לעזוב. אפשר לסיים את המשחק');
+    me.outReason = 'left';
     me.status = 'out';
     await changed(game);
     return { ok: true };

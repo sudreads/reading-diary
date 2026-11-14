@@ -937,3 +937,17 @@ test('cheating: the same picture twice is refused, from anyone in the game', asy
   // Nothing about the hash leaks to players.
   assert.equal(JSON.stringify(await state(g.code, g.token)).includes('hash'), false);
 });
+
+test('out of the game: the player is told why', async () => {
+  const g = await newGame();
+  const a = await joinAs(g.code, 'נדחה'), b = await joinAs(g.code, 'הוצא'), c = await joinAs(g.code, 'עזב');
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: b.playerId } });
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { playerId: c.playerId } });
+  await call('POST', `/api/games/${g.code}/kick`, { token: g.token, json: { playerId: a.playerId } });
+  await call('POST', `/api/games/${g.code}/kick`, { token: g.token, json: { playerId: b.playerId } });
+  await call('POST', `/api/games/${g.code}/leave`, { token: c.token });
+  assert.equal((await state(g.code, a.token)).me.outReason, 'rejected');
+  assert.equal((await state(g.code, b.token)).me.outReason, 'removed');
+  assert.equal((await state(g.code, c.token)).me.outReason, 'left');
+  assert.equal((await state(g.code, g.token)).me.outReason, undefined);
+});

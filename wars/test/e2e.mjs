@@ -360,7 +360,17 @@ try {
   // --- home lists the game ---
   await dana.getByRole('button', { name: 'חזרה לדף הבית' }).click();
   await dana.getByText('המשחקים שלי').waitFor();
-  await dana.getByRole('button', { name: /סופ״ש באילת/ }).click();
+  await dana.locator('.row.link', { hasText: 'סופ״ש באילת' }).click();
+  await dana.locator('.winner').waitFor();
+  // Removing a finished game from the list needs no confirmation.
+  const danaSessions = await dana.evaluate(() => localStorage.getItem('fw.sessions'));
+  await dana.getByRole('button', { name: 'חזרה לדף הבית' }).click();
+  await dana.getByText('המשחקים שלי').waitFor();
+  await dana.getByRole('button', { name: /להסיר את סופ״ש באילת/ }).click();
+  await dana.getByText('המשחקים שלי').waitFor({ state: 'detached' }); // it was her only game
+  await dana.goto(`${base}/#/g/${code}`); // the rematch steps below start from the finished game
+  await dana.evaluate((s) => localStorage.setItem('fw.sessions', s), danaSessions);
+  await dana.reload();
   await dana.locator('.winner').waitFor();
 
   for (const p of [boss, dana, yossi, late]) assert.equal(await p.getByText('null', { exact: true }).count(), 0);
@@ -387,6 +397,28 @@ try {
   await dana.goto(`${base}/#/g/${code}`);
   await dana.getByRole('button', { name: /למשחק החוזר/ }).click();
   await dana.locator('.action').first().waitFor();
+
+  // --- a rejected joiner is told so, and can clear it from the list ---
+  {
+    const nope = await phone('nope');
+    await nope.goto(`${base}/#/join/${code2}`);
+    await nope.getByPlaceholder('השם שלך').fill('לא מוזמן');
+    await nope.getByRole('button', { name: 'להצטרף למשחק' }).click();
+    await nope.getByText('ברשימת ההמתנה').waitFor();
+    // The boss turns him away (through the API, to keep the test short).
+    const status = await boss.evaluate(async (gameCode) => {
+      const { token } = JSON.parse(localStorage.getItem('fw.sessions'))[gameCode];
+      const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const game = await (await fetch(`/api/games/${gameCode}`, { headers: auth })).json();
+      const id = game.players.find((p) => p.name === 'לא מוזמן').id;
+      return (await fetch(`/api/games/${gameCode}/kick`, { method: 'POST', headers: auth, body: JSON.stringify({ playerId: id }) })).status;
+    }, code2);
+    assert.equal(status, 200);
+    await nope.getByText('הבוס לא אישר את ההצטרפות').waitFor();
+    await nope.locator('.btn.primary', { hasText: 'חזרה לדף הבית' }).click();
+    await nope.getByText('יש לך קוד?').waitFor();
+    assert.equal(await nope.getByText('המשחקים שלי').count(), 0);
+  }
 
   assert.deepEqual(errors, []);
   console.log(`e2e ok - game ${code}, screenshots in ${SHOTS}`);
