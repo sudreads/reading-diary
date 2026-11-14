@@ -951,3 +951,22 @@ test('out of the game: the player is told why', async () => {
   assert.equal((await state(g.code, c.token)).me.outReason, 'left');
   assert.equal((await state(g.code, g.token)).me.outReason, undefined);
 });
+
+test('the boss can change the challenges in the lobby, and only then', async () => {
+  const g = await newGame();
+  const dana = await joinAs(g.code, 'דנה');
+  await call('POST', `/api/games/${g.code}/approve`, { token: g.token, json: { all: true } });
+  const set = (token, categories) => call('POST', `/api/games/${g.code}/categories`, { token, json: { categories } });
+  const two = [{ id: 'beer', emoji: '🍺', label: 'בירה' }, { id: 'tacos', emoji: '🌮', label: 'טאקו' }];
+
+  assert.equal((await set(dana.token, two)).status, 403);
+  assert.equal((await set(g.token, [])).status, 400);
+  assert.equal((await set(g.token)).status, 400); // missing list is not "use the defaults"
+  assert.equal((await set(g.token, Array.from({ length: 13 }, (_, i) => ({ label: `c${i}` })))).status, 400);
+  assert.equal((await set(g.token, two)).status, 200);
+  assert.deepEqual((await state(g.code, dana.token)).categories, two);
+
+  await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  assert.equal((await set(g.token, two.slice(0, 1))).status, 409);
+  assert.equal((await point(g.code, dana.token, 'tacos')).status, 201);
+});

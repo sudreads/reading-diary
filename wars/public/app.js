@@ -354,11 +354,8 @@ function forgetFromList(code, s) {
 
 // ----- create -----
 
-async function openCreateSheet() {
-  let defaults = [];
-  try { defaults = (await api('GET', '/defaults')).categories; } catch (e) { toast(e.message, 'bad'); return; }
-  const cats = defaults.map((c) => ({ ...c, on: true }));
-  const nameInput = h('input', { class: 'input', maxLength: 40, placeholder: `המשחק של ${app.name}` });
+// The challenge picker, shared by "new game" and the boss's lobby edit: toggle chips, add your own.
+function categoryPicker(cats) {
   const chips = h('div', { class: 'chips wrap' });
   const drawChips = () => {
     clear(chips);
@@ -372,16 +369,35 @@ async function openCreateSheet() {
   const add = () => {
     const label = labelInput.value.trim();
     if (!label) { labelInput.focus(); return; }
-    if (cats.length >= 12) { toast('עד 12 אתגרים', 'bad'); return; }
+    if (cats.filter((c) => c.on).length >= 12) { toast('עד 12 אתגרים', 'bad'); return; }
     cats.push({ id: `x${Date.now().toString(36)}`, emoji: emojiInput.value.trim() || '⭐', label, on: true });
     labelInput.value = ''; emojiInput.value = '';
     drawChips();
   };
   labelInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+  const chosen = () => {
+    const list = cats.filter((c) => c.on).map(({ id, emoji, label }) => ({ id, emoji, label }));
+    if (!list.length) toast('צריך לבחור לפחות אתגר אחד', 'bad');
+    else if (list.length > 12) toast('עד 12 אתגרים', 'bad');
+    else return list;
+    return null;
+  };
+  return { nodes: [chips, h('div', { class: 'add-row' }, emojiInput, labelInput, h('button', { class: 'btn small', type: 'button', onclick: add }, 'הוספה'))], chosen };
+}
+
+async function loadDefaults() {
+  try { return (await api('GET', '/defaults')).categories; } catch (e) { toast(e.message, 'bad'); return null; }
+}
+
+async function openCreateSheet() {
+  const defaults = await loadDefaults();
+  if (!defaults) return;
+  const picker = categoryPicker(defaults.map((c) => ({ ...c, on: true })));
+  const nameInput = h('input', { class: 'input', maxLength: 40, placeholder: `המשחק של ${app.name}` });
   const createBtn = h('button', { class: 'btn primary', type: 'button' }, 'להקים משחק');
   createBtn.addEventListener('click', () => act(async () => {
-    const chosen = cats.filter((c) => c.on).map(({ id, emoji, label }) => ({ id, emoji, label }));
-    if (!chosen.length) { toast('צריך לבחור לפחות אתגר אחד', 'bad'); return; }
+    const chosen = picker.chosen();
+    if (!chosen) return;
     const out = await api('POST', '/games', { body: { playerName: app.name, name: nameInput.value, categories: chosen } });
     app.sessions[out.code] = { token: out.token, lastSeen: Date.now() };
     saveSessions();
@@ -392,10 +408,27 @@ async function openCreateSheet() {
     h('h2', {}, 'משחק חדש'),
     h('label', { class: 'label' }, 'שם המשחק'), nameInput,
     h('div', { class: 'label' }, 'על מה מתחרים? מי שעושה הכי הרבה מנצח'),
-    chips,
-    h('div', { class: 'add-row' }, emojiInput, labelInput, h('button', { class: 'btn small', type: 'button', onclick: add }, 'הוספה')),
+    ...picker.nodes,
     createBtn,
   );
+}
+
+// The boss can still change the challenges in the lobby, once everyone is in and has an opinion.
+async function openEditChallenges(g) {
+  const defaults = await loadDefaults();
+  if (!defaults) return;
+  const current = g.categories.map((c) => ({ ...c, on: true }));
+  const unused = defaults.filter((d) => !current.some((c) => c.id === d.id)).map((d) => ({ ...d, on: false }));
+  const picker = categoryPicker([...current, ...unused]);
+  const save = h('button', { class: 'btn primary', type: 'button' }, 'לשמור');
+  save.addEventListener('click', () => act(async () => {
+    const chosen = picker.chosen();
+    if (!chosen) return;
+    await gameApi('POST', '/categories', { body: { categories: chosen } });
+    closeSheet();
+    toast('האתגרים עודכנו', 'good');
+  }, save));
+  openSheet(h('h2', {}, 'על מה מתחרים?'), h('p', { class: 'muted' }, 'כולם יראו את השינוי מיד.'), ...picker.nodes, save);
 }
 
 // ----- sheets -----
@@ -593,7 +626,8 @@ function lobbyView(g) {
       h('div', { class: 'label' }, `בקבוצה (${members.length})`),
       h('div', { class: 'list' }, members.map((p) => memberRow(g, p)))),
     h('section', { class: 'card' },
-      h('div', { class: 'label' }, 'על מה מתחרים'),
+      h('div', { class: 'card-head' }, h('div', { class: 'label' }, 'על מה מתחרים'),
+        g.me.isHost ? h('button', { class: 'btn small ghost', type: 'button', onclick: () => openEditChallenges(g) }, 'לשנות ✏️') : null),
       h('div', { class: 'chips wrap' }, g.categories.map((c) => h('span', { class: 'chip on static' }, `${c.emoji} ${c.label}`)))),
   ];
   if (g.me.isHost) {

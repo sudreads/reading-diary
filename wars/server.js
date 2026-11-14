@@ -461,6 +461,16 @@ export function createApp({
     return { ok: true };
   }
 
+  // Challenges can change until the whistle; after that the points already scored would lose their meaning.
+  async function setCategories(game, me, req) {
+    requireHost(game, me);
+    if (game.status !== 'lobby') throw new HttpError(409, 'not-lobby', 'אי אפשר לשנות אתגרים אחרי שהמשחק התחיל');
+    const body = await readJson(req);
+    game.categories = parseCategories(body.categories ?? null);
+    await changed(game);
+    return { ok: true };
+  }
+
   async function start(game, me, req) {
     requireHost(game, me);
     if (game.status !== 'lobby') throw new HttpError(409, 'not-lobby', 'המשחק כבר התחיל');
@@ -688,6 +698,7 @@ export function createApp({
       if (action === 'kick' && m === 'POST') return sendJson(res, 200, await kick(game, me, req));
       if (action === 'transfer' && m === 'POST') return sendJson(res, 200, await transfer(game, me, req));
       if (action === 'leave' && m === 'POST') return sendJson(res, 200, await leave(game, me));
+      if (action === 'categories' && m === 'POST') return sendJson(res, 200, await setCategories(game, me, req));
       if (action === 'start' && m === 'POST') return sendJson(res, 200, await start(game, me, req));
       if (action === 'rematch' && m === 'POST') return sendJson(res, 201, await rematch(game, me, req));
       if (action === 'end' && m === 'POST') return sendJson(res, 200, await end(game, me));

@@ -131,6 +131,20 @@ try {
   await shot(yossi, '05-lobby-member');
   assert.equal(await dana.getByRole('button', { name: /להתחיל את המשחק/ }).count(), 0); // only the boss starts
 
+  // --- the boss changes the challenges in the lobby; everyone sees it ---
+  await boss.getByRole('button', { name: /לשנות/ }).click();
+  await boss.locator('.sheet-panel .chip', { hasText: 'לשתות מים' }).click(); // add water back
+  await boss.locator('.sheet-panel .chip', { hasText: 'להיות במסיבה' }).click(); // drop party
+  await boss.getByRole('button', { name: 'לשמור' }).click();
+  await dana.locator('.chip.static', { hasText: 'לשתות מים' }).waitFor();
+  assert.equal(await dana.locator('.chip.static', { hasText: 'להיות במסיבה' }).count(), 0);
+  await boss.getByRole('button', { name: /לשנות/ }).click(); // and back again, so the story below is unchanged
+  await boss.locator('.sheet-panel .chip', { hasText: 'לשתות מים' }).click();
+  await boss.locator('.sheet-panel .chip', { hasText: 'להיות במסיבה' }).click();
+  await boss.getByRole('button', { name: 'לשמור' }).click();
+  await dana.locator('.chip.static', { hasText: 'להיות במסיבה' }).waitFor();
+  assert.equal(await dana.getByRole('button', { name: /לשנות/ }).count(), 0); // only the boss edits
+
   // --- start ---
   await boss.locator('#hours').selectOption('24');
   await boss.getByRole('button', { name: /להתחיל את המשחק/ }).click();
