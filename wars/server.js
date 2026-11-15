@@ -94,7 +94,7 @@ function parseCategories(input) {
 
 export function createApp({
   dataDir, now = () => Date.now(), createsPerHour = 20, joinsPerMinute = 30, joinsPerGameHour = 40, requestsPerMinute = 3000, playerRequestsPerMinute = 900, codeMisses = 15,
-  trustProxy = 0, quiet = true, maxStreamBacklog = 1024 * 1024, maxGames = 3000, maxTotalBytes = 5 * 1024 ** 3,
+  trustProxy = 0, quiet = true, maxStreamBacklog = 1024 * 1024, broadcastDelayMs = 250, reactionsPerMinute = 60, maxGames = 3000, maxTotalBytes = 5 * 1024 ** 3,
 }) {
   const gamesDir = path.join(dataDir, 'games');
   const photosDir = path.join(dataDir, 'photos');
@@ -227,7 +227,18 @@ export function createApp({
     client.res.write(text);
   }
 
-  function changed(game) { broadcast(game); return save(game); }
+  // Updates are gathered for a moment and sent once: ten reactions in a second cost every phone one
+  // update, not ten. The delay is short enough to feel instant.
+  const pending = new Map(); // code -> timer
+  function changed(game) {
+    if (!pending.has(game.code)) {
+      pending.set(game.code, setTimeout(() => {
+        pending.delete(game.code);
+        if (games.get(game.code) === game) broadcast(game);
+      }, broadcastDelayMs));
+    }
+    return save(game);
+  }
 
   function endIfDue(game) {
     if (game.status === 'active' && game.endsAt && game.endsAt <= now()) {
@@ -252,6 +263,8 @@ export function createApp({
 
   function removeGame(game) {
     games.delete(game.code);
+    clearTimeout(pending.get(game.code));
+    pending.delete(game.code);
     for (const e of game.entries) totalBytes -= e.size || 0;
     for (const client of streams.get(game.code) || []) client.res.end();
     streams.delete(game.code);
@@ -549,6 +562,7 @@ export function createApp({
     if (game.status === 'lobby') throw new HttpError(409, 'not-active', 'המשחק עוד לא התחיל');
     const entry = game.entries.find((e) => e.id === entryId);
     if (!entry) throw new HttpError(404, 'no-entry', 'התמונה לא נמצאה');
+    limit(`react:${me.id}`, reactionsPerMinute, 60_000); // tapping is fun; a script tapping is not
     const body = await readJson(req);
     if (!REACTIONS.includes(body.emoji)) throw bad('bad-reaction', 'תגובה לא מוכרת');
     entry.reactions ||= {};
@@ -733,7 +747,7 @@ export function createApp({
   server.on('clientError', (err, socket) => { if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); else socket.destroy(); });
   const timer = setInterval(sweep, 15_000);
   timer.unref();
-  server.on('close', () => clearInterval(timer));
+  server.on('close', () => { clearInterval(timer); for (const t of pending.values()) clearTimeout(t); pending.clear(); });
 
   return { server, games, sweep, flush: () => Promise.all([...saving.values()]), stats: () => ({ games: games.size, totalBytes, streams: streamCount }) };
 }

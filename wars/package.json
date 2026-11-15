@@ -7,7 +7,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/api.test.mjs",
+    "test": "node --test --test-timeout=30000 test/api.test.mjs",
     "test:e2e": "node test/e2e.mjs"
   }
 }

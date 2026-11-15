@@ -811,7 +811,7 @@ test('mobile data: state and live updates are gzipped, and updates still arrive 
 
 test('attack: a client that opens a live stream and never reads is cut off', async () => {
   const net = await import('node:net');
-  const { mini, url, req, stop } = await miniServer({ maxStreamBacklog: 64 * 1024, playerRequestsPerMinute: 1e9, requestsPerMinute: 1e9 });
+  const { mini, url, req, stop } = await miniServer({ maxStreamBacklog: 64 * 1024, playerRequestsPerMinute: 1e9, requestsPerMinute: 1e9, reactionsPerMinute: 1e9, broadcastDelayMs: 0 });
   const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
   await req('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
   // A big game, so every update is large (no photos are read, only the list).
@@ -969,4 +969,35 @@ test('the boss can change the challenges in the lobby, and only then', async () 
   await call('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
   assert.equal((await set(g.token, two.slice(0, 1))).status, 409);
   assert.equal((await point(g.code, dana.token, 'tacos')).status, 201);
+});
+
+test('a burst of changes reaches every phone as one update, and reactions are rate-limited', async () => {
+  const { url, req, stop } = await miniServer({ reactionsPerMinute: 30, playerRequestsPerMinute: 1e9 });
+  const g = (await req('POST', '/api/games', { json: { playerName: 'בוס' } })).body;
+  await req('POST', `/api/games/${g.code}/start`, { token: g.token, json: {} });
+  await req('POST', `/api/games/${g.code}/entries?cat=beer`, { token: g.token, raw: fresh(), headers: { 'Content-Type': 'image/jpeg' } });
+  const id = (await req('GET', `/api/games/${g.code}`, { token: g.token })).body.entries[0].id;
+
+  const res = await fetch(`${url}/api/games/${g.code}/events`, { headers: { Authorization: `Bearer ${g.token}` } });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  const events = [];
+  try {
+  (async () => { for (;;) { const { value, done } = await reader.read(); if (done) return; text += decoder.decode(value, { stream: true }); let cut; while ((cut = text.indexOf('\n\n')) >= 0) { const line = text.slice(0, cut).split('\n').find((l) => l.startsWith('data: ')); text = text.slice(cut + 2); if (line) events.push(JSON.parse(line.slice(6))); } } })().catch(() => {});
+  for (let i = 0; i < 50 && !events.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(events.length, 1);
+
+  // 31 quick taps: 30 count, the 31st is refused, and the stream carries about one update.
+  const statuses = [];
+  for (let i = 0; i < 31; i++) statuses.push((await req('POST', `/api/games/${g.code}/entries/${id}/react`, { token: g.token, json: { emoji: i % 2 ? '😂' : '🔥' } })).status);
+  assert.deepEqual([statuses.slice(0, 30).every((x) => x === 200), statuses[30]], [true, 429]);
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(events.length <= 4, true, `${events.length} updates`);
+  // Each emoji was tapped 15 times (an odd number): both end up on, and the last update says so.
+  assert.deepEqual(events.at(-1).entries[0].reactions, { '🔥': { n: 1, mine: true }, '😂': { n: 1, mine: true } });
+  } finally {
+    await reader.cancel().catch(() => {});
+    await stop();
+  }
 });

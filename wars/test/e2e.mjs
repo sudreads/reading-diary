@@ -160,7 +160,7 @@ try {
   await addPoint(yossi, 'לאכול פיצה', photos.food, 'משולש שלישי');
   await addPoint(yossi, 'לצלם נוף', photos.view);
   await addPoint(boss, 'לשתות בירה', photos.beer);
-  assert.equal((await dana.locator('.action', { hasText: 'לשתות בירה' }).locator('.action-count').textContent()).trim(), '2');
+  await dana.locator('.action', { hasText: 'לשתות בירה' }).locator('.action-count', { hasText: /^2$/ }).waitFor();
   await dana.locator('.toast').waitFor({ state: 'visible' });
   await dana.waitForTimeout(2300); // let the confetti fall
   await shot(dana, '06-play');
@@ -173,7 +173,7 @@ try {
     await (await chooser).setFiles(await fakePhoto(photos.beer));
     await yossi.locator('.sheet-panel img.preview').waitFor();
     await yossi.getByRole('button', { name: 'סגירה' }).click();
-    assert.equal((await yossi.locator('.action', { hasText: 'לשתות בירה' }).locator('.action-count').textContent()).trim(), '0');
+    await yossi.locator('.action', { hasText: 'לשתות בירה' }).locator('.action-count', { hasText: /^0$/ }).waitFor();
   }
 
   // --- updates from others must not disturb what you are doing ---
@@ -216,7 +216,7 @@ try {
     await yossi.locator('.toast.show.bad', { hasText: 'כבר עלתה' }).waitFor();
     assert.equal(await yossi.getByRole('button', { name: /זה נחשב|לנסות שוב/ }).isVisible(), false);
     await yossi.getByRole('button', { name: 'סגירה' }).click();
-    assert.equal((await yossi.locator('.action', { hasText: 'לצלם נוף' }).locator('.action-count').textContent()).trim(), '2');
+    await yossi.locator('.action', { hasText: 'לצלם נוף' }).locator('.action-count', { hasText: /^2$/ }).waitFor();
     assert.equal(await deleteNewest(yossi), 200); // keep the story below unchanged
     await yossi.getByRole('tab', { name: 'גלריה (6)' }).waitFor();
   }
@@ -303,7 +303,7 @@ try {
     await net.waitFor({ state: 'hidden', timeout: 20000 });
     await late.getByRole('button', { name: 'לנסות שוב' }).click();
     await late.locator('.sheet-panel').waitFor({ state: 'detached' });
-    assert.equal((await late.locator('.action', { hasText: 'להיות במסיבה' }).locator('.action-count').textContent()).trim(), '1');
+    await late.locator('.action', { hasText: 'להיות במסיבה' }).locator('.action-count', { hasText: /^1$/ }).waitFor();
     assert.equal(await deleteNewest(boss), 200); // keep the story below unchanged
     await late.getByRole('tab', { name: 'גלריה (6)' }).waitFor();
   }
