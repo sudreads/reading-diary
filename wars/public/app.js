@@ -724,6 +724,8 @@ photoInput.addEventListener('change', async () => {
       throw e;
     }
     closeSheet();
+    // Your own point should show at once, not after the next batched update.
+    gameApi('GET').then((fresh) => { if (app.code && fresh.code === app.code) onState(fresh); }).catch(() => {});
     toast(`\u200E+1 ${cat.emoji} ${cat.label}`, 'good');
     burst(cat.emoji);
     if (navigator.vibrate) navigator.vibrate(40);
